@@ -314,6 +314,11 @@ macro_rules! offer_derived_metadata_builder_methods {
 macro_rules! offer_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr $(, $self_mut: tt)?
 ) => {
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn require_blake2b($($self_mut)* $self: $self_type) -> $return_type {
+		$self.offer.features.set_blake2b_required();
+		$return_value
+	}
 	/// Adds the chain hash of the given [`Network`] to [`Offer::chains`]. If not called,
 	/// the chain hash of [`Network::Bitcoin`] is assumed to be the only one supported.
 	///

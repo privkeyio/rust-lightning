@@ -1122,7 +1122,9 @@ impl OutboundPayments {
 		let (payment_hash, retry_strategy, params_config, _) = self
 			.mark_invoice_received_and_get_details(invoice, payment_id)?;
 
-		if invoice.invoice_features().requires_unknown_bits_from(&features) {
+		if invoice.invoice_features().requires_unknown_bits_from(&features)
+			|| (features.supports_blake2b() && !invoice.invoice_features().supports_blake2b())
+		{
 			self.abandon_payment(
 				payment_id, PaymentFailureReason::UnknownRequiredFeatures, pending_events,
 			);
@@ -1293,7 +1295,10 @@ impl OutboundPayments {
 					if !invoice.is_from_same_offer(invreq) {
 						return Err(Bolt12PaymentError::UnexpectedInvoice);
 					}
-					if invoice.invoice_features().requires_unknown_bits_from(&features) {
+					if invoice.invoice_features().requires_unknown_bits_from(&features)
+						|| (features.supports_blake2b()
+							&& !invoice.invoice_features().supports_blake2b())
+					{
 						abandon_with_entry!(entry, PaymentFailureReason::UnknownRequiredFeatures);
 						return Err(Bolt12PaymentError::UnknownRequiredFeatures);
 					}
