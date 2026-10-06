@@ -933,6 +933,16 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, M: tb::Bool>
 		}
 		self
 	}
+
+	/// Sets the `option_blake2b` feature as required.
+	pub fn blake2b(mut self) -> Self {
+		for field in self.tagged_fields.iter_mut() {
+			if let TaggedField::Features(f) = field {
+				f.set_blake2b_required();
+			}
+		}
+		self
+	}
 }
 
 impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::True, M> {

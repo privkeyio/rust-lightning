@@ -1,9 +1,11 @@
 //! Tests for `option_blake2b` and `option_unified_sigs`.
 
-use crate::events::ClosureReason;
-use crate::ln::channelmanager;
+use crate::events::{ClosureReason, Event};
+use crate::ln::channelmanager::{self, PaymentId};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::ln::outbound_payment::{Bolt11PaymentError, RetryableSendFailure};
+use crate::offers::parse::Bolt12SemanticError;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
 
@@ -180,4 +182,86 @@ fn test_unified_channel_type_required_outbound() {
 		_ => panic!("Wrong result {:?}", res),
 	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
+fn test_refuse_bolt11_invoice_without_blake2b() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(unified_config(true)), Some(test_default_channel_config())],
+	);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let invoice = nodes[1].node.create_bolt11_invoice(Default::default()).unwrap();
+	assert!(!invoice.features().unwrap().supports_blake2b());
+	let res = nodes[0].node.pay_for_bolt11_invoice(
+		&invoice,
+		PaymentId([42; 32]),
+		Some(10_000),
+		Default::default(),
+	);
+	assert!(matches!(
+		res,
+		Err(Bolt11PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound))
+	));
+}
+
+#[test]
+fn test_offers_set_and_require_blake2b() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(
+		2,
+		&node_cfgs,
+		&[Some(unified_config(true)), Some(test_default_channel_config())],
+	);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let offer = nodes[0].node.create_offer_builder().unwrap().build().unwrap();
+	assert!(offer.offer_features().requires_blake2b());
+
+	let legacy_offer = nodes[1].node.create_offer_builder().unwrap().build().unwrap();
+	assert!(!legacy_offer.offer_features().supports_blake2b());
+	let res = nodes[0].node.pay_for_offer(
+		&legacy_offer,
+		Some(10_000),
+		PaymentId([1; 32]),
+		Default::default(),
+	);
+	assert_eq!(res, Err(Bolt12SemanticError::UnknownRequiredFeatures));
+}
+
+#[test]
+fn test_pay_bolt11_invoice_between_blake2b_nodes() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = unified_config(true);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let mut params = channelmanager::Bolt11InvoiceParameters::default();
+	params.amount_msats = Some(50_000);
+	let invoice = nodes[1].node.create_bolt11_invoice(params).unwrap();
+	assert!(invoice.features().unwrap().requires_blake2b());
+
+	let payment_hash = invoice.payment_hash();
+	nodes[0]
+		.node
+		.pay_for_bolt11_invoice(&invoice, PaymentId(payment_hash.0), None, Default::default())
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let send_event = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(nodes[0].node.get_our_node_id(), &send_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
+	expect_and_process_pending_htlcs(&nodes[1], false);
+
+	let preimage = match &nodes[1].node.get_and_clear_pending_events()[..] {
+		[Event::PaymentClaimable { purpose, .. }] => purpose.preimage().unwrap(),
+		events => panic!("Unexpected events {:?}", events),
+	};
+	claim_payment(&nodes[0], &[&nodes[1]], preimage);
 }

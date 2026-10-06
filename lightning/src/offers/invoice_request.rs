@@ -191,6 +191,11 @@ macro_rules! invoice_request_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr, $secp_context: ty $(, $self_mut: tt)?
 ) => {
 	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn require_blake2b($($self_mut)* $self: $self_type) -> $return_type {
+		$self.invoice_request.features.set_blake2b_required();
+		$return_value
+	}
+	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerSigningPubkey {
 		let offer = offer.contents.clone();
 		InvoiceRequestContentsWithoutPayerSigningPubkey {

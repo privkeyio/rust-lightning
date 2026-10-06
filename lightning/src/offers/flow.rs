@@ -91,6 +91,8 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
 
+	follow_blake2b: bool,
+
 	logger: L,
 }
 
@@ -120,8 +122,19 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
 
+			follow_blake2b: true,
+
 			logger,
 		}
+	}
+
+	/// Sets whether offers, refunds and invoice requests built here carry `option_blake2b` and
+	/// whether those received without it are refused. See [`UserConfig::follow_blake2b`].
+	///
+	/// [`UserConfig::follow_blake2b`]: crate::util::config::UserConfig::follow_blake2b
+	pub fn with_follow_blake2b(mut self, follow_blake2b: bool) -> Self {
+		self.follow_blake2b = follow_blake2b;
+		self
 	}
 
 	/// If we are an async recipient, on startup we'll interactively build offers and static invoices
@@ -453,6 +466,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
+		if self.follow_blake2b && !invoice_request.invoice_request_features().supports_blake2b() {
+			log_trace!(
+				self.logger,
+				"Ignoring an invoice request which does not set option_blake2b"
+			);
+			return Err(());
+		}
+
 		let nonce = match context {
 			None if invoice_request.metadata().is_some() => None,
 			Some(OffersContext::InvoiceRequest { nonce, payment_metadata: _ }) => Some(nonce),
@@ -588,6 +609,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			secp_ctx,
 		)
 		.chain_hash(self.chain_hash);
+		if self.follow_blake2b {
+			builder = builder.require_blake2b();
+		}
 
 		for path in make_paths(node_id, context, secp_ctx)? {
 			builder = builder.path(path)
@@ -807,6 +831,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		)?
 		.chain_hash(self.chain_hash)
 		.absolute_expiry(absolute_expiry);
+		if self.follow_blake2b {
+			builder = builder.require_blake2b();
+		}
 
 		for path in make_paths(node_id, context, secp_ctx)? {
 			builder = builder.path(path);
@@ -922,9 +949,16 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let expanded_key = &self.inbound_payment_key;
 		let secp_ctx = &self.secp_ctx;
 
+		if self.follow_blake2b && !offer.offer_features().supports_blake2b() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
+
 		let builder: InvoiceRequestBuilder<secp256k1::All> =
 			offer.request_invoice(expanded_key, nonce, secp_ctx, payment_id)?.into();
-		let builder = builder.chain_hash(self.chain_hash)?;
+		let mut builder = builder.chain_hash(self.chain_hash)?;
+		if self.follow_blake2b {
+			builder = builder.require_blake2b();
+		}
 
 		Ok(builder)
 	}
@@ -986,7 +1020,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			offer_nonce,
 			secp_ctx,
 		)
-		.map(|inv| inv.allow_mpp().relative_expiry(relative_expiry_secs))
+		.map(|inv| {
+			let inv = inv.allow_mpp().relative_expiry(relative_expiry_secs);
+			if self.follow_blake2b {
+				inv.require_blake2b()
+			} else {
+				inv
+			}
+		})
 	}
 
 	/// Creates an [`InvoiceBuilder`] using the provided [`Refund`].
@@ -1013,6 +1054,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	{
 		if refund.chain() != self.chain_hash {
 			return Err(Bolt12SemanticError::UnsupportedChain);
+		}
+		if self.follow_blake2b && !refund.features().supports_blake2b() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
 		let expanded_key = &self.inbound_payment_key;
@@ -1055,7 +1099,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			entropy,
 		)?;
 
-		Ok(builder.into())
+		let builder: InvoiceBuilder<'a, DerivedSigningPubkey> = builder.into();
+		Ok(if self.follow_blake2b { builder.require_blake2b() } else { builder })
 	}
 
 	/// Creates an [`InvoiceBuilder<DerivedSigningPubkey>`] for the
@@ -1127,6 +1172,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				created_at,
 			)
 			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let builder = if self.follow_blake2b { builder.require_blake2b() } else { builder };
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
@@ -1197,6 +1243,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let builder = invoice_request
 			.respond_with_amount(amount_msats, payment_paths, payment_hash, created_at)
 			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let builder = if self.follow_blake2b { builder.require_blake2b() } else { builder };
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 

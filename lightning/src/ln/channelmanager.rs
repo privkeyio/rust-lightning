@@ -3893,7 +3893,8 @@ impl<
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router,
 			logger.clone(),
-		);
+		)
+		.with_follow_blake2b(config.follow_blake2b);
 
 		ChannelManager {
 			config: RwLock::new(config),
@@ -6000,9 +6001,17 @@ impl<
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		optional_params: OptionalBolt11PaymentParams,
 	) -> Result<(), Bolt11PaymentError> {
+		let payment_hash = invoice.payment_hash();
+		if self.config.read().unwrap().follow_blake2b
+			&& !invoice.features().is_some_and(|f| f.supports_blake2b())
+		{
+			let logger =
+				WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id);
+			log_error!(logger, "Refusing to pay an invoice which does not set option_blake2b");
+			return Err(Bolt11PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound));
+		}
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let payment_hash = invoice.payment_hash();
 		self.pending_outbound_payments.pay_for_bolt11_invoice(
 			invoice,
 			payment_id,
@@ -14912,6 +14921,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			invoice = invoice.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 		}
 
+		if self.config.read().unwrap().follow_blake2b {
+			invoice = invoice.blake2b();
+		}
+
 		if let Some(amount_msats) = amount_msats {
 			invoice = invoice.amount_milli_satoshis(amount_msats);
 		}
@@ -21060,7 +21073,8 @@ impl<
 			args.message_router,
 			args.logger.clone(),
 		)
-		.with_async_payments_offers_cache(async_receive_offer_cache);
+		.with_async_payments_offers_cache(async_receive_offer_cache)
+		.with_follow_blake2b(args.config.follow_blake2b);
 
 		let channel_manager = ChannelManager {
 			chain_hash,

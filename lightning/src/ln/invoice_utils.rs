@@ -221,6 +221,7 @@ fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 		.duration_since_epoch(duration_since_epoch)
 		.payment_hash(payment_hash)
 		.payment_secret(payment_secret)
+		.blake2b()
 		.min_final_cltv_expiry_delta(
 			// Add a buffer of 3 to the delta if present, otherwise use LDK's minimum.
 			min_final_cltv_expiry_delta
