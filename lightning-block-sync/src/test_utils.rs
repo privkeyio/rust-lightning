@@ -9,7 +9,7 @@ use bitcoin::hash_types::{BlockHash, TxMerkleNode};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::network::Network;
 use bitcoin::transaction;
-use bitcoin::Transaction;
+use bitcoin::{OutPoint, Transaction, TxIn};
 
 use lightning::chain;
 use lightning::chain::BlockLocator;
@@ -51,7 +51,7 @@ impl Blockchain {
 			let coinbase = Transaction {
 				version: transaction::Version(0),
 				lock_time: LockTime::ZERO,
-				input: vec![],
+				input: vec![TxIn { previous_output: OutPoint::null(), ..Default::default() }],
 				output: vec![],
 			};
 			let merkle_root = TxMerkleNode::from_raw_hash(coinbase.compute_txid().to_raw_hash());
@@ -63,6 +63,7 @@ impl Blockchain {
 					time,
 					bits,
 					nonce: 0,
+					v2: None,
 				},
 				txdata: vec![coinbase],
 			});

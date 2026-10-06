@@ -12,3 +12,6 @@ lightning-persister = { path = "../lightning-persister" }
 lightning-background-processor = { path = "../lightning-background-processor" }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync" }
 lightning-custom-message = { path = "../lightning-custom-message" }
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/privkeyio/rust-bitcoin", rev = "3c8cd5749b998069cb641fa150944760945329ff" }
