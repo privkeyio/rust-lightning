@@ -4,7 +4,7 @@ use crate::rpc::RpcClientError;
 use crate::utils::hex_to_work;
 use crate::{BlockHeaderData, BlockSourceError};
 
-use bitcoin::block::{Block, Header};
+use bitcoin::block::{Block, Header, HeaderV2};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
 use bitcoin::hex::FromHex;
@@ -140,6 +140,34 @@ impl TryInto<BlockHeaderData> for JsonResponse {
 	}
 }
 
+fn hex_field<const N: usize>(response: &serde_json::Value, name: &str) -> Result<[u8; N], ()>
+where
+	[u8; N]: FromHex,
+{
+	<[u8; N]>::from_hex(response.get(name).ok_or(())?.as_str().ok_or(())?).map_err(|_| ())
+}
+
+fn num_field<T: TryFrom<i64>>(response: &serde_json::Value, name: &str) -> Result<T, ()> {
+	response.get(name).ok_or(())?.as_i64().ok_or(())?.try_into().map_err(|_| ())
+}
+
+/// Reads the extended header fields `getblockheader` reports for a v2 header. The 32 bit nonces
+/// and the byte blobs are hex in wire byte order.
+fn header_v2_from_json(response: &serde_json::Value) -> Result<HeaderV2, ()> {
+	Ok(HeaderV2 {
+		nonce2: u32::from_le_bytes(hex_field(response, "nonce2")?),
+		nonce3: u32::from_le_bytes(hex_field(response, "nonce3")?),
+		extranonce: hex_field(response, "extranonce")?,
+		time_offset: num_field(response, "time_offset")?,
+		txcount: num_field(response, "txcount")?,
+		flags: num_field(response, "header_flags")?,
+		xor_key_mask_clear_bits: num_field(response, "xor_key_mask_clear_bits")?,
+		xor_key: hex_field(response, "xor_key")?,
+		height: num_field(response, "height")?,
+		mm_rhs: hex_field(response, "mm_rhs")?,
+	})
+}
+
 impl TryFrom<serde_json::Value> for BlockHeaderData {
 	type Error = ();
 
@@ -167,6 +195,11 @@ impl TryFrom<serde_json::Value> for BlockHeaderData {
 					<[u8; 4]>::from_hex(get_field!("bits", as_str)).map_err(|_| ())?,
 				)),
 				nonce: get_field!("nonce", as_u64).try_into().map_err(|_| ())?,
+				v2: match response.get("header_version").map(|v| v.as_u64()) {
+					None | Some(Some(0)) => None,
+					Some(Some(2)) => Some(header_v2_from_json(&response)?),
+					_ => return Err(()),
+				},
 			},
 			chainwork: hex_to_work(get_field!("chainwork", as_str)).map_err(|_| ())?,
 			height: get_field!("height", as_u64).try_into().map_err(|_| ())?,
@@ -343,7 +376,7 @@ pub(crate) mod tests {
 	impl From<BlockHeaderData> for serde_json::Value {
 		fn from(data: BlockHeaderData) -> Self {
 			let BlockHeaderData { chainwork, height, header } = data;
-			serde_json::json!({
+			let mut json = serde_json::json!({
 				"chainwork": chainwork.to_be_bytes().as_hex().to_string(),
 				"height": height,
 				"version": header.version.to_consensus(),
@@ -352,8 +385,93 @@ pub(crate) mod tests {
 				"nonce": header.nonce,
 				"bits": header.bits.to_consensus().to_be_bytes().as_hex().to_string(),
 				"previousblockhash": header.prev_blockhash.to_string(),
-			})
+			});
+			if let Some(v2) = header.v2 {
+				let fields = serde_json::json!({
+					"header_version": 2,
+					"txcount": v2.txcount,
+					"nonce2": v2.nonce2.to_le_bytes().as_hex().to_string(),
+					"nonce3": v2.nonce3.to_le_bytes().as_hex().to_string(),
+					"extranonce": v2.extranonce.as_hex().to_string(),
+					"time_offset": v2.time_offset,
+					"header_flags": v2.flags,
+					"xor_key_mask_clear_bits": v2.xor_key_mask_clear_bits,
+					"xor_key": v2.xor_key.as_hex().to_string(),
+					"mm_rhs": v2.mm_rhs.as_hex().to_string(),
+				});
+				for (key, value) in fields.as_object().unwrap() {
+					json[key] = value.clone();
+				}
+			}
+			json
 		}
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_v2_header() {
+		// Block 961640 as reported by `getblockheader` with and without verbose output.
+		let response = JsonResponse(serde_json::json!({
+			"hash": "0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb",
+			"height": 961640,
+			"version": 536870912,
+			"merkleroot": "68c70bdcd063030abe9410d523d52a027c781176cc4960af3a6b0f5a51a837c1",
+			"time": 1788070477,
+			"nonce": 2356769110u32,
+			"bits": "1a008d4f",
+			"chainwork": "00000000000000000000000000000000000000013e002762b0a1ae991b033e89",
+			"nTx": 798,
+			"txcount": 798,
+			"header_version": 2,
+			"nonce2": "84daeb49",
+			"nonce3": "4dca936a",
+			"extranonce": "00000000b1ccf00d0300000000000000",
+			"time_offset": 0,
+			"header_flags": 0,
+			"xor_key_mask_clear_bits": 0,
+			"xor_key": "00000000000000000000000000000000",
+			"mm_rhs": "0000000000000000000000000000000000000000000000000000000000000000",
+			"previousblockhash": "00000000000000000001bbc439e13f749dca850d32c7a2834165338713027e65",
+		}));
+		let raw = "000000a0657e02138733654183a2c7320d85ca9d743fe139c4bb01000000000000000000c137a8515a0f6b3aaf6049cc7611787c022ad523d51094be0a0363d0dc0bc7684dca936a4f8d001a5671798c84daeb494dca936a00000000b1ccf00d0300000000000000000000001e0300000000000000000000000000000000000068ac0e000000000000000000000000000000000000000000000000000000000000000000";
+		let data: BlockHeaderData = response.try_into().unwrap();
+		assert_eq!(encode::serialize_hex(&data.header), raw);
+		assert_eq!(
+			data.header.block_hash().to_string(),
+			"0000000000000050c1e5f69672f459293be14f46e5a494e7a8c8541396f18eeb"
+		);
+		assert_eq!(data.height, 961640);
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_v2_header_round_trip() {
+		let mut header = genesis_block(Network::Bitcoin).header;
+		header.time = 1_800_000_000;
+		header.v2 = Some(HeaderV2 {
+			nonce2: 0x01020304,
+			nonce3: 0x05060708,
+			extranonce: [7; 16],
+			time_offset: 1_000,
+			txcount: 3,
+			flags: HeaderV2::USE_TIME_OFFSET | 1,
+			xor_key_mask_clear_bits: 5,
+			xor_key: [9; 16],
+			height: 42,
+			mm_rhs: [3; 32],
+		});
+		let data = BlockHeaderData { chainwork: header.work(), height: 42, header };
+		let response = JsonResponse(data.into());
+		assert_eq!(TryInto::<BlockHeaderData>::try_into(response).unwrap(), data);
+	}
+
+	#[test]
+	fn into_block_header_from_json_response_with_unknown_header_version() {
+		let block = genesis_block(Network::Bitcoin);
+		let mut response = JsonResponse(
+			BlockHeaderData { chainwork: block.header.work(), height: 0, header: block.header }
+				.into(),
+		);
+		response.0["header_version"] = serde_json::json!(3);
+		assert!(TryInto::<BlockHeaderData>::try_into(response).is_err());
 	}
 
 	#[test]
