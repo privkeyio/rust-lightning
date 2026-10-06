@@ -24,7 +24,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, sighash, FeeRate, Sequence, TxIn};
+use bitcoin::{secp256k1, FeeRate, Sequence, TxIn};
 
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
@@ -3934,7 +3934,7 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 		let initial_commitment_tx = commitment_data.tx;
 		let trusted_tx = initial_commitment_tx.trust();
 		let initial_commitment_bitcoin_tx = trusted_tx.built_transaction();
-		let sighash = initial_commitment_bitcoin_tx.get_sighash_all(&funding_script, self.funding().get_value_satoshis());
+		let sighash = initial_commitment_bitcoin_tx.get_channel_sighash(&funding_script, self.funding().get_value_satoshis(), self.funding().get_channel_type());
 		// They sign the holder commitment transaction...
 		log_trace!(logger, "Checking {} tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} for channel {}.",
 			self.received_msg(), log_bytes!(sig.serialize_compact()[..]), log_bytes!(self.funding().counterparty_funding_pubkey().serialize()),
@@ -5966,7 +5966,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				));
 			}
 
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
+			let sighash = bitcoin_tx.get_channel_sighash(
+				&funding_script,
+				funding.get_value_satoshis(),
+				funding.get_channel_type(),
+			);
 
 			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
 				log_bytes!(msg.signature.serialize_compact()[..]),
@@ -6028,15 +6032,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			} else {
 				EcdsaSighashType::All
 			};
-			let htlc_sighash = hash_to_message!(
-				&sighash::SighashCache::new(&htlc_tx)
-					.p2wsh_signature_hash(
-						0,
-						&htlc_redeemscript,
-						htlc.to_bitcoin_amount(),
-						htlc_sighashtype
-					)
-					.unwrap()[..]
+			let htlc_sighash = chan_utils::channel_p2wsh_sighash(
+				&htlc_tx,
+				0,
+				&htlc_redeemscript,
+				htlc.to_bitcoin_amount(),
+				htlc_sighashtype,
+				channel_type,
 			);
 			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
 				log_bytes!(counterparty_sig.serialize_compact()[..]),
@@ -6857,7 +6859,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			) {
 			return Err(());
 		}
-		if funding.get_channel_type() == &ChannelTypeFeatures::only_static_remote_key() {
+		let mut floor = ChannelTypeFeatures::only_static_remote_key();
+		if funding.get_channel_type().supports_unified_sigs() {
+			floor.set_unified_sigs_required();
+		}
+		if funding.get_channel_type() == &floor {
 			// We've exhausted our options
 			return Err(());
 		}
@@ -10608,7 +10614,7 @@ where
 						let signed_tx = if let (Some(ClosingSigned { signature, .. }), Some(counterparty_sig)) =
 							(closing_signed.as_ref(), self.context.last_received_closing_sig) {
 							let funding_redeemscript = self.funding.get_funding_redeemscript();
-							let sighash = closing_tx.trust().get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
+							let sighash = closing_tx.trust().get_channel_sighash(&funding_redeemscript, self.funding.get_value_satoshis(), self.funding.get_channel_type());
 							debug_assert!(self.context.secp_ctx.verify_ecdsa(&sighash, &counterparty_sig,
 																			 &self.funding.get_counterparty_pubkeys().funding_pubkey).is_ok());
 							Some(self.build_signed_closing_transaction(&closing_tx, &counterparty_sig, signature))
@@ -11663,10 +11669,15 @@ where
 
 		let funding_key = self.funding.get_holder_pubkeys().funding_pubkey.serialize();
 		let counterparty_funding_key = self.funding.counterparty_funding_pubkey().serialize();
-		let mut holder_sig = sig.serialize_der().to_vec();
-		holder_sig.push(EcdsaSighashType::All as u8);
-		let mut cp_sig = counterparty_sig.serialize_der().to_vec();
-		cp_sig.push(EcdsaSighashType::All as u8);
+		let channel_type = self.funding.get_channel_type();
+		let holder_sig =
+			chan_utils::channel_signature_bytes(sig, &tx, EcdsaSighashType::All, channel_type);
+		let cp_sig = chan_utils::channel_signature_bytes(
+			counterparty_sig,
+			&tx,
+			EcdsaSighashType::All,
+			channel_type,
+		);
 		if funding_key[..] < counterparty_funding_key[..] {
 			tx.input[0].witness.push(holder_sig);
 			tx.input[0].witness.push(cp_sig);
@@ -11785,9 +11796,11 @@ where
 		if used_total_fee != msg.fee_satoshis {
 			return Err(ChannelError::close(format!("Remote sent us a closing_signed with a fee other than the value they can claim. Fee in message: {}. Actual closing tx fee: {}", msg.fee_satoshis, used_total_fee)));
 		}
-		let sighash = closing_tx
-			.trust()
-			.get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
+		let sighash = closing_tx.trust().get_channel_sighash(
+			&funding_redeemscript,
+			self.funding.get_value_satoshis(),
+			self.funding.get_channel_type(),
+		);
 
 		match self.context.secp_ctx.verify_ecdsa(
 			&sighash,
@@ -11801,9 +11814,11 @@ where
 				skip_remote_output = true;
 				closing_tx =
 					self.build_closing_transaction(msg.fee_satoshis, skip_remote_output)?.0;
-				let sighash = closing_tx
-					.trust()
-					.get_sighash_all(&funding_redeemscript, self.funding.get_value_satoshis());
+				let sighash = closing_tx.trust().get_channel_sighash(
+					&funding_redeemscript,
+					self.funding.get_value_satoshis(),
+					self.funding.get_channel_type(),
+				);
 				let res = self.context.secp_ctx.verify_ecdsa(
 					&sighash,
 					&msg.signature,
@@ -13207,6 +13222,15 @@ where
 
 	/// Builds a [`FundingTemplate`] for splicing or RBF, if the channel state allows it.
 	pub fn splice_channel(&self) -> Result<FundingTemplate, APIError> {
+		if self.funding.get_channel_type().supports_unified_sigs() {
+			return Err(APIError::APIMisuseError {
+				err: format!(
+					"Channel {} cannot be spliced as it uses option_unified_sigs",
+					self.context.channel_id(),
+				),
+			});
+		}
+
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(APIError::APIMisuseError {
 				err: format!(
@@ -13443,8 +13467,9 @@ where
 	) -> Result<Option<msgs::Stfu>, QuiescentError> {
 		debug_assert!(contribution.is_splice());
 
-		// Refuse the contribution if one of ours is already queued or under negotiation. Like any
-		// failure, the refusal releases what the contribution reserved itself.
+		// Refuse the contribution if one of ours is already queued or under negotiation, or if the
+		// channel uses option_unified_sigs, which `splice_channel` refuses. Like any failure, the
+		// refusal releases what the contribution reserved itself.
 		let already_contributing = match self.quiescent_action.as_ref() {
 			Some(QuiescentAction::Splice { .. }) => true,
 			#[cfg(any(test, fuzzing, feature = "_test_utils"))]
@@ -13455,7 +13480,7 @@ where
 				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
 				.is_some_and(|funding_negotiation| funding_negotiation.is_initiator()),
 		};
-		if already_contributing {
+		if already_contributing || self.funding.get_channel_type().supports_unified_sigs() {
 			return Err(match contribution.unique_contributions() {
 				None => QuiescentError::DoNothing,
 				Some((inputs, outputs)) => QuiescentError::DiscardFunding {
@@ -13772,6 +13797,12 @@ where
 
 	/// Checks during handling splice_init
 	pub fn validate_splice_init(&self, msg: &msgs::SpliceInit) -> Result<(), ChannelError> {
+		if self.funding.get_channel_type().supports_unified_sigs() {
+			return Err(ChannelError::WarnAndDisconnect(
+				"Splicing is not supported on option_unified_sigs channels".to_owned(),
+			));
+		}
+
 		// - If it has received shutdown:
 		//   MUST send a warning and close the connection or send an error
 		//   and fail the channel.
@@ -14338,6 +14369,12 @@ where
 	fn validate_splice_ack(
 		&self, msg: &msgs::SpliceAck, min_funding_satoshis: u64,
 	) -> Result<FundingScope, ChannelError> {
+		if self.funding.get_channel_type().supports_unified_sigs() {
+			return Err(ChannelError::WarnAndDisconnect(
+				"Splicing is not supported on option_unified_sigs channels".to_owned(),
+			));
+		}
+
 		let pending_splice = self
 			.pending_splice
 			.as_ref()
@@ -15889,6 +15926,11 @@ pub(super) fn channel_type_from_open_channel(
 	if channel_type.requires_unknown_bits_from(&our_supported_features) {
 		return Err(ChannelError::close("Channel Type contains unsupported features".to_owned()));
 	}
+	if our_supported_features.supports_unified_sigs() && !channel_type.supports_unified_sigs() {
+		return Err(ChannelError::close(
+			"Channel Type must include option_unified_sigs for new channels".to_owned(),
+		));
+	}
 	let announce_for_forwarding = if (common_fields.channel_flags & 1) == 1 { true } else { false };
 	if channel_type.requires_scid_privacy() && announce_for_forwarding {
 		return Err(ChannelError::close(
@@ -16532,6 +16574,10 @@ pub(super) fn get_initial_channel_type(
 		&& their_features.supports_anchors_zero_fee_htlc_tx()
 	{
 		ret.set_anchors_zero_fee_htlc_tx_required();
+	}
+
+	if config.follow_blake2b && their_features.supports_unified_sigs() {
+		ret.set_unified_sigs_required();
 	}
 
 	ret

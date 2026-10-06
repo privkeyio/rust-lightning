@@ -938,27 +938,101 @@ pub(crate) fn build_htlc_output(
 	}
 }
 
+/// The hash type byte a channel signature with the given base hash type carries.
+///
+/// With `option_unified_sigs` this adds `SIGHASH_UNIFIED` (`0x20`) to the base hash type.
+pub fn channel_sighash_byte(
+	base: EcdsaSighashType, channel_type_features: &ChannelTypeFeatures,
+) -> u8 {
+	let byte = base as u8;
+	if channel_type_features.supports_unified_sigs() {
+		byte | sighash::SIGHASH_UNIFIED
+	} else {
+		byte
+	}
+}
+
+/// Computes the signature hash for an input spending the P2WSH output of `witness_script` worth
+/// `value`, under the hash type a channel of the given type uses.
+///
+/// With `option_unified_sigs` this is the unified opt-in signature hash. Unless the hash type is
+/// `ANYONECANPAY` it commits to every spent output, so it is only computed for a transaction with
+/// a single input; a transaction with more is signed with the legacy hash type, which is what
+/// [`channel_signature_bytes`] serializes for it.
+pub fn channel_p2wsh_sighash(
+	tx: &Transaction, input_index: usize, witness_script: &Script, value: Amount,
+	base: EcdsaSighashType, channel_type_features: &ChannelTypeFeatures,
+) -> Message {
+	let anyone_can_pay = base as u8 & 0x80 != 0;
+	if channel_type_features.supports_unified_sigs() && (anyone_can_pay || tx.input.len() == 1) {
+		let spent = TxOut { value, script_pubkey: witness_script.to_p2wsh() };
+		let hash_type = channel_sighash_byte(base, channel_type_features);
+		let spend = sighash::UnifiedSpend::SegwitV0(witness_script);
+		let mut cache = sighash::SighashCache::new(tx);
+		let hash = if anyone_can_pay {
+			cache.unified_signature_hash(
+				input_index,
+				&sighash::Prevouts::One(input_index, spent),
+				spend,
+				hash_type,
+			)
+		} else {
+			cache.unified_signature_hash(
+				input_index,
+				&sighash::Prevouts::All(&[spent]),
+				spend,
+				hash_type,
+			)
+		};
+		return hash_to_message!(&hash.expect("valid input index and hash type")[..]);
+	}
+	let sighash = sighash::SighashCache::new(tx)
+		.p2wsh_signature_hash(input_index, witness_script, value, base)
+		.expect("valid input index");
+	hash_to_message!(&sighash[..])
+}
+
+/// Serializes a signature made with [`channel_p2wsh_sighash`] for a witness: the DER signature
+/// followed by its hash type byte.
+pub fn channel_signature_bytes(
+	sig: &Signature, tx: &Transaction, base: EcdsaSighashType,
+	channel_type_features: &ChannelTypeFeatures,
+) -> Vec<u8> {
+	let anyone_can_pay = base as u8 & 0x80 != 0;
+	let mut ret = sig.serialize_der().to_vec();
+	if anyone_can_pay || tx.input.len() == 1 {
+		ret.push(channel_sighash_byte(base, channel_type_features));
+	} else {
+		ret.push(base as u8);
+	}
+	ret
+}
+
 /// Returns the witness required to satisfy and spend a HTLC input.
 pub fn build_htlc_input_witness(
 	local_sig: &Signature, remote_sig: &Signature, preimage: &Option<PaymentPreimage>,
 	redeem_script: &Script, channel_type_features: &ChannelTypeFeatures,
 ) -> Witness {
-	let remote_sighash_type = if channel_type_features.supports_anchors_zero_fee_htlc_tx()
-		|| channel_type_features.supports_anchor_zero_fee_commitments()
-	{
-		EcdsaSighashType::SinglePlusAnyoneCanPay
-	} else {
-		EcdsaSighashType::All
-	};
+	let anchors = channel_type_features.supports_anchors_zero_fee_htlc_tx()
+		|| channel_type_features.supports_anchor_zero_fee_commitments();
+	let remote_sighash_type =
+		if anchors { EcdsaSighashType::SinglePlusAnyoneCanPay } else { EcdsaSighashType::All };
 
 	let mut witness = Witness::new();
 	// First push the multisig dummy, note that due to BIP147 (NULLDUMMY) it must be a zero-length element.
 	witness.push(vec![]);
-	witness.push_ecdsa_signature(&BitcoinSignature {
-		signature: *remote_sig,
-		sighash_type: remote_sighash_type,
-	});
-	witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(*local_sig));
+	let mut remote = remote_sig.serialize_der().to_vec();
+	remote.push(channel_sighash_byte(remote_sighash_type, channel_type_features));
+	witness.push(remote);
+	// With anchors our own signature is made over a transaction aggregated with other inputs, so
+	// it keeps the legacy hash type; see `channel_p2wsh_sighash`.
+	let mut local = local_sig.serialize_der().to_vec();
+	if anchors {
+		local.push(EcdsaSighashType::All as u8);
+	} else {
+		local.push(channel_sighash_byte(EcdsaSighashType::All, channel_type_features));
+	}
+	witness.push(local);
 	if let Some(preimage) = preimage {
 		witness.push(preimage.0.to_vec());
 	} else {
@@ -1413,12 +1487,15 @@ impl HolderCommitmentTransaction {
 		let mut tx = self.inner.built.transaction.clone();
 		tx.input[0].witness.push(Vec::new());
 
+		let channel_type = &self.inner.channel_type_features;
+		let holder = channel_signature_bytes(&holder_sig, &tx, EcdsaSighashType::All, channel_type);
+		let counterparty = channel_signature_bytes(&self.counterparty_sig, &tx, EcdsaSighashType::All, channel_type);
 		if self.holder_sig_first {
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
+			tx.input[0].witness.push(holder);
+			tx.input[0].witness.push(counterparty);
 		} else {
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(self.counterparty_sig));
-			tx.input[0].witness.push_ecdsa_signature(&BitcoinSignature::sighash_all(holder_sig));
+			tx.input[0].witness.push(counterparty);
+			tx.input[0].witness.push(holder);
 		}
 
 		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
@@ -1469,6 +1546,24 @@ impl BuiltCommitmentTransaction {
 	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign_with_aux_rand(secp_ctx, &sighash, funding_key, entropy_source)
+	}
+
+	/// Get the sighash value of the transaction under the hash type a channel of the given type
+	/// uses.
+	///
+	/// This can be used to verify a signature.
+	pub fn get_channel_sighash(
+		&self, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		channel_type_features: &ChannelTypeFeatures,
+	) -> Message {
+		channel_p2wsh_sighash(
+			&self.transaction,
+			0,
+			funding_redeemscript,
+			Amount::from_sat(channel_value_satoshis),
+			EcdsaSighashType::All,
+			channel_type_features,
+		)
 	}
 }
 
@@ -1602,6 +1697,24 @@ impl<'a> TrustedClosingTransaction<'a> {
 	) -> Signature {
 		let sighash = self.get_sighash_all(funding_redeemscript, channel_value_satoshis);
 		sign(secp_ctx, &sighash, funding_key)
+	}
+
+	/// Get the sighash value of the transaction under the hash type a channel of the given type
+	/// uses.
+	///
+	/// This can be used to verify a signature.
+	pub fn get_channel_sighash(
+		&self, funding_redeemscript: &Script, channel_value_satoshis: u64,
+		channel_type_features: &ChannelTypeFeatures,
+	) -> Message {
+		channel_p2wsh_sighash(
+			&self.inner.built,
+			0,
+			funding_redeemscript,
+			Amount::from_sat(channel_value_satoshis),
+			EcdsaSighashType::All,
+			channel_type_features,
+		)
 	}
 }
 
@@ -2165,7 +2278,15 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 
 			let htlc_redeemscript = get_htlc_redeemscript_with_explicit_keys(&this_htlc, &self.channel_type_features, &keys.broadcaster_htlc_key, &keys.countersignatory_htlc_key, &keys.revocation_key);
 
-			let sighash = hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All).unwrap()[..]);
+			// With anchors our signature keeps the legacy hash type, as `build_htlc_input_witness`
+			// serializes it.
+			let anchors = self.channel_type_features.supports_anchors_zero_fee_htlc_tx()
+				|| self.channel_type_features.supports_anchor_zero_fee_commitments();
+			let sighash = if anchors {
+				hash_to_message!(&sighash::SighashCache::new(&htlc_tx).p2wsh_signature_hash(0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All).unwrap()[..])
+			} else {
+				channel_p2wsh_sighash(&htlc_tx, 0, &htlc_redeemscript, this_htlc.to_bitcoin_amount(), EcdsaSighashType::All, &self.channel_type_features)
+			};
 			ret.push(sign_with_aux_rand(secp_ctx, &sighash, &holder_htlc_key, entropy_source));
 		}
 		Ok(ret)

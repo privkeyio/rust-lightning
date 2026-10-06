@@ -2221,7 +2221,17 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 		let min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
 		assert!(total_value_out + min_fee <= total_value_in);
 	}
-	tx.verify(get_output).unwrap();
+	// libbitcoinconsensus predates SIGHASH_UNIFIED, so it cannot check a transaction carrying a
+	// unified signature.
+	let is_unified_sig = |item: &[u8]| {
+		item.len() > 2
+			&& item[0] == 0x30
+			&& item[1] as usize + 3 == item.len()
+			&& item[item.len() - 1] & bitcoin::sighash::SIGHASH_UNIFIED != 0
+	};
+	if !tx.input.iter().any(|input| input.witness.iter().any(is_unified_sig)) {
+		tx.verify(get_output).unwrap();
+	}
 }
 
 #[macro_export]
@@ -4805,6 +4815,7 @@ pub fn test_legacy_channel_config() -> UserConfig {
 	default_config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(50_000_000 / 253);
 	default_config.reject_inbound_splices = false;
+	default_config.follow_blake2b = false;
 	default_config
 }
 

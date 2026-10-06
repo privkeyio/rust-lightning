@@ -1623,12 +1623,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 
 		let built_tx = trusted_tx.built_transaction();
-		let commitment_sig = built_tx.sign_counterparty_commitment(
-			&funding_key,
+		let commitment_sighash = built_tx.get_channel_sighash(
 			&channel_funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
-			secp_ctx,
+			&channel_parameters.channel_type_features,
 		);
+		let commitment_sig = sign(secp_ctx, &commitment_sighash, &funding_key);
 		let commitment_txid = built_tx.txid;
 
 		let mut htlc_sigs = Vec::with_capacity(commitment_tx.nondust_htlcs().len());
@@ -1652,15 +1652,13 @@ impl EcdsaChannelSigner for InMemorySigner {
 			} else {
 				EcdsaSighashType::All
 			};
-			let htlc_sighash = hash_to_message!(
-				&sighash::SighashCache::new(&htlc_tx)
-					.p2wsh_signature_hash(
-						0,
-						&htlc_redeemscript,
-						htlc.to_bitcoin_amount(),
-						htlc_sighashtype
-					)
-					.unwrap()[..]
+			let htlc_sighash = chan_utils::channel_p2wsh_sighash(
+				&htlc_tx,
+				0,
+				&htlc_redeemscript,
+				htlc.to_bitcoin_amount(),
+				htlc_sighashtype,
+				chan_type,
 			);
 			let holder_htlc_key = chan_utils::derive_private_key(
 				&secp_ctx,
@@ -1686,13 +1684,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
-		Ok(trusted_tx.built_transaction().sign_holder_commitment(
-			&funding_key,
+		let sighash = trusted_tx.built_transaction().get_channel_sighash(
 			&funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
-			&self,
-			secp_ctx,
-		))
+			&channel_parameters.channel_type_features,
+		);
+		Ok(sign_with_aux_rand(secp_ctx, &sighash, &funding_key, &self))
 	}
 
 	#[cfg(any(test, feature = "_test_utils", feature = "unsafe_revoked_tx_signing"))]
@@ -1709,13 +1706,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 		let funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, &counterparty_keys.funding_pubkey);
 		let trusted_tx = commitment_tx.trust();
-		Ok(trusted_tx.built_transaction().sign_holder_commitment(
-			&funding_key,
+		let sighash = trusted_tx.built_transaction().get_channel_sighash(
 			&funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
-			&self,
-			secp_ctx,
-		))
+			&channel_parameters.channel_type_features,
+		);
+		Ok(sign_with_aux_rand(secp_ctx, &sighash, &funding_key, &self))
 	}
 
 	fn sign_justice_revoked_output(
@@ -1827,20 +1823,39 @@ impl EcdsaChannelSigner for InMemorySigner {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 
 		let witness_script = htlc_descriptor.witness_script(secp_ctx);
-		let sighash = &sighash::SighashCache::new(&*htlc_tx)
-			.p2wsh_signature_hash(
+		if input >= htlc_tx.input.len() {
+			return Err(());
+		}
+		let chan_type = &channel_parameters.channel_type_features;
+		// With anchors the HTLC transaction is aggregated with other inputs, so our signature
+		// keeps the legacy hash type, as `chan_utils::build_htlc_input_witness` serializes it.
+		let sighash = if chan_type.supports_anchors_zero_fee_htlc_tx()
+			|| chan_type.supports_anchor_zero_fee_commitments()
+		{
+			let sighash = &sighash::SighashCache::new(&*htlc_tx)
+				.p2wsh_signature_hash(
+					input,
+					&witness_script,
+					htlc_descriptor.htlc.to_bitcoin_amount(),
+					EcdsaSighashType::All,
+				)
+				.map_err(|_| ())?;
+			hash_to_message!(sighash.as_byte_array())
+		} else {
+			chan_utils::channel_p2wsh_sighash(
+				htlc_tx,
 				input,
 				&witness_script,
 				htlc_descriptor.htlc.to_bitcoin_amount(),
 				EcdsaSighashType::All,
+				chan_type,
 			)
-			.map_err(|_| ())?;
+		};
 		let our_htlc_private_key = chan_utils::derive_private_key(
 			&secp_ctx,
 			&htlc_descriptor.per_commitment_point,
 			&self.htlc_base_key,
 		);
-		let sighash = hash_to_message!(sighash.as_byte_array());
 		Ok(sign_with_aux_rand(&secp_ctx, &sighash, &our_htlc_private_key, &self))
 	}
 
@@ -1901,12 +1916,12 @@ impl EcdsaChannelSigner for InMemorySigner {
 			&channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
 		let channel_funding_redeemscript =
 			make_funding_redeemscript(&funding_pubkey, counterparty_funding_key);
-		Ok(closing_tx.trust().sign(
-			&funding_key,
+		let sighash = closing_tx.trust().get_channel_sighash(
 			&channel_funding_redeemscript,
 			channel_parameters.channel_value_satoshis,
-			secp_ctx,
-		))
+			&channel_parameters.channel_type_features,
+		);
+		Ok(sign(secp_ctx, &sighash, &funding_key))
 	}
 
 	fn sign_holder_keyed_anchor_input(

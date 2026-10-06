@@ -83,6 +83,8 @@
 //!   (see [BOLT PR #1160](https://github.com/lightning/bolts/pull/1160) for more information).
 //! - `HtlcHold` - requires/supports holding HTLCs and forwarding on receipt of an onion message
 //!   (see [BOLT-2](https://github.com/lightning/bolts/pull/989/files) for more information).
+//! - `Blake2b` - the node follows the BLAKE2b proof of work rules.
+//! - `UnifiedSigs` - the channel signs with the unified opt-in signature hash.
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -174,6 +176,10 @@ mod sealed {
 			,,,,,,,,,,,
 			// Byte 19
 			HtlcHold,
+			// Byte 20 - 63
+			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 64
+			Blake2b | UnifiedSigs,
 		]
 	);
 	define_context!(
@@ -203,6 +209,10 @@ mod sealed {
 			,,,,,,,,,,,,
 			// Byte 32
 			DnsResolver,
+			// Byte 33 - 63
+			,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+			// Byte 64
+			Blake2b | UnifiedSigs,
 		]
 	);
 	define_context!(ChannelContext, []);
@@ -223,9 +233,23 @@ mod sealed {
 		PaymentMetadata,
 		// Byte 7
 		Trampoline,
+		// Byte 8 - 63
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 64
+		Blake2b,
 	]);
-	define_context!(OfferContext, []);
-	define_context!(InvoiceRequestContext, []);
+	define_context!(OfferContext, [
+		// Byte 0 - 63
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 64
+		Blake2b,
+	]);
+	define_context!(InvoiceRequestContext, [
+		// Byte 0 - 63
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 64
+		Blake2b,
+	]);
 	define_context!(Bolt12InvoiceContext, [
 		// Byte 0
 		,
@@ -243,6 +267,10 @@ mod sealed {
 		,
 		// Byte 7
 		Trampoline,
+		// Byte 8 - 63
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 64
+		Blake2b,
 	]);
 	define_context!(BlindedHopContext, []);
 	// This isn't a "real" feature context, and is only used in the channel_type field in an
@@ -266,6 +294,10 @@ mod sealed {
 		,,,,,,,,,,
 		// Byte 17
 		AnchorZeroFeeCommitmentsStaging,
+		// Byte 18 - 63
+		,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,,
+		// Byte 64
+		UnifiedSigs,
 	]);
 
 	/// Defines a feature with the given bits for the specified [`Context`]s. The generated trait is
@@ -745,6 +777,36 @@ mod sealed {
 		clear_dns_resolution,
 		supports_dns_resolution,
 		requires_dns_resolution
+	);
+
+	define_feature!(
+		513,
+		Blake2b,
+		[
+			InitContext,
+			NodeContext,
+			Bolt11InvoiceContext,
+			OfferContext,
+			InvoiceRequestContext,
+			Bolt12InvoiceContext
+		],
+		"Feature flags for following the BLAKE2b proof of work rules.",
+		set_blake2b_optional,
+		set_blake2b_required,
+		clear_blake2b,
+		supports_blake2b,
+		requires_blake2b
+	);
+	define_feature!(
+		515,
+		UnifiedSigs,
+		[InitContext, NodeContext, ChannelTypeContext],
+		"Feature flags for signing with the unified opt-in signature hash.",
+		set_unified_sigs_optional,
+		set_unified_sigs_required,
+		clear_unified_sigs,
+		supports_unified_sigs,
+		requires_unified_sigs
 	);
 
 	// Note: update the module-level docs when a new feature bit is added!

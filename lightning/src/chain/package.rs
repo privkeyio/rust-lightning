@@ -109,6 +109,7 @@ pub(crate) fn verify_channel_type_features(
 	supported_feature_set.set_scid_privacy_required();
 	supported_feature_set.set_zero_conf_required();
 	supported_feature_set.set_anchor_zero_fee_commitments_required();
+	supported_feature_set.set_unified_sigs_required();
 
 	// allow the passing of an additional necessary permitted flag
 	if let Some(additional_permitted_features) = additional_permitted_features {

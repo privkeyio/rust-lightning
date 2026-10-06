@@ -61,6 +61,8 @@ mod async_payments_tests;
 #[allow(unused_mut)]
 mod async_signer_tests;
 #[cfg(test)]
+mod blake2b_tests;
+#[cfg(test)]
 #[allow(unused_mut)]
 mod blinded_payment_tests;
 #[cfg(test)]

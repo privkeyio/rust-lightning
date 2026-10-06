@@ -1134,6 +1134,12 @@ pub struct UserConfig {
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	pub reject_inbound_splices: bool,
+	/// If this is set to `true`, the node requires `option_blake2b` (bit 512) in its features and
+	/// in the invoices, offers and refunds it builds or pays, and opens new channels with
+	/// `option_unified_sigs` (bit 514), signing their transactions with the unified signature hash.
+	///
+	/// Default value: `true`
+	pub follow_blake2b: bool,
 }
 
 impl Default for UserConfig {
@@ -1150,6 +1156,9 @@ impl Default for UserConfig {
 			enable_htlc_hold: false,
 			hold_outbound_htlcs_at_next_hop: false,
 			reject_inbound_splices: true,
+			// LDK's own unit tests build this default and assert the exact features and channel
+			// types it produces, so they keep it off; everything built against this crate gets it.
+			follow_blake2b: !cfg!(test),
 		}
 	}
 }
@@ -1172,6 +1181,7 @@ impl Readable for UserConfig {
 			hold_outbound_htlcs_at_next_hop: Readable::read(reader)?,
 			enable_htlc_hold: Readable::read(reader)?,
 			reject_inbound_splices: Readable::read(reader)?,
+			follow_blake2b: Readable::read(reader)?,
 		})
 	}
 }

@@ -4049,6 +4049,18 @@ impl<
 			}
 		}
 
+		{
+			let config = self.config.read().unwrap();
+			let follow_blake2b = override_config.as_ref().unwrap_or(&*config).follow_blake2b;
+			if follow_blake2b && !peer_state.latest_features.supports_unified_sigs() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Peer {their_network_key} does not support option_unified_sigs, which new channels require"
+					),
+				});
+			}
+		}
+
 		let mut channel = {
 			let outbound_scid_alias = self.create_and_insert_outbound_scid_alias();
 			let their_features = &peer_state.latest_features;
@@ -18132,6 +18144,11 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 		features.set_htlc_hold_optional();
 	}
 
+	if config.follow_blake2b {
+		features.set_blake2b_required();
+		features.set_unified_sigs_optional();
+	}
+
 	features
 }
 
@@ -18963,14 +18980,13 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut channels = Vec::with_capacity(cmp::min(channel_count as usize, 128));
+		// A channel opened with option_unified_sigs stays readable if follow_blake2b is turned off.
+		let mut readable_channel_types = provided_channel_type_features(&args.config);
+		readable_channel_types.set_unified_sigs_required();
 		for _ in 0..channel_count {
 			let channel: FundedChannel<SP> = FundedChannel::read(
 				reader,
-				(
-					args.entropy_source,
-					args.signer_provider,
-					&provided_channel_type_features(&args.config),
-				),
+				(args.entropy_source, args.signer_provider, &readable_channel_types),
 			)?;
 			channels.push(channel);
 		}
