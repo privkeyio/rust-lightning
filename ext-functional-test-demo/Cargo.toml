@@ -8,3 +8,6 @@ test-broken = []
 
 [dependencies]
 lightning = { path = "../lightning", features = ["_externalize_tests"] }
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/privkeyio/rust-bitcoin", rev = "3c8cd5749b998069cb641fa150944760945329ff" }

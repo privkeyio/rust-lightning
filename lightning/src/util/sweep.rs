@@ -1365,6 +1365,7 @@ mod tests {
 			time: 1,
 			bits: bitcoin::pow::CompactTarget::from_consensus(42),
 			nonce: 42,
+			v2: None,
 		};
 		let tracked_outpoint = bitcoin::OutPoint { txid: Txid::all_zeros(), vout: 0 };
 		let spending_tx = Transaction {
