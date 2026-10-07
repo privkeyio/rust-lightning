@@ -15,8 +15,8 @@ jobs:
       matrix:
         platform: >-
           ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
-            && fromJSON('["self-hosted","windows-latest","macos-latest"]')
-            || fromJSON('["self-hosted"]') }}
+            && fromJSON('["ubuntu-latest","windows-latest","macos-latest"]')
+            || fromJSON('["ubuntu-latest"]') }}
         toolchain: >-
           ${{ github.event_name == 'push' && github.ref == 'refs/heads/main'
             && fromJSON('["stable","beta","1.75.0"]')
@@ -43,7 +43,7 @@ jobs:
         if: "matrix.toolchain == '1.75.0'"
         run: echo "RUSTFLAGS=-D warnings" >> "$GITHUB_ENV"
       - name: Install no-std-check dependencies for ARM Embedded
-        if: matrix.platform == 'self-hosted'
+        if: matrix.platform == 'ubuntu-latest'
         run: |
           rustup target add thumbv7m-none-eabi
       - name: Enable caching for bitcoind
