@@ -68,10 +68,13 @@ fn do_test_unified_channel(anchors: bool) {
 	for node in nodes.iter() {
 		let txn = get_local_commitment_txn!(node, channel_id);
 		assert_eq!(witness_sighash_bytes(&txn[0], 0), vec![UNIFIED_ALL, UNIFIED_ALL]);
+		check_spends!(txn[0], funding_tx);
 	}
 
-	let (_, _, closing_tx) = close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
+	let (_, _, closing_tx) =
+		close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx.clone(), true);
 	assert_eq!(witness_sighash_bytes(&closing_tx, 0), vec![UNIFIED_ALL, UNIFIED_ALL]);
+	check_spends!(closing_tx, funding_tx);
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
 	check_closed_event(
@@ -106,14 +109,25 @@ fn test_unified_htlc_timeout_tx() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let (_, _, channel_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
 
 	let txn = get_local_commitment_txn!(nodes[0], channel_id);
 	assert_eq!(txn.len(), 2);
 	assert_eq!(witness_sighash_bytes(&txn[0], 0), vec![UNIFIED_ALL, UNIFIED_ALL]);
+	check_spends!(txn[0], funding_tx);
 	assert_eq!(txn[1].input.len(), 1);
 	assert_eq!(witness_sighash_bytes(&txn[1], 0), vec![UNIFIED_ALL, UNIFIED_ALL]);
+	check_spends!(txn[1], txn[0]);
+
+	// The check rejects a signature whose hash type byte differs from what it was made over.
+	let mut tampered = txn[1].clone();
+	let mut witness: Vec<Vec<u8>> = tampered.input[0].witness.to_vec();
+	*witness[1].last_mut().unwrap() = EcdsaSighashType::Single as u8 | SIGHASH_UNIFIED;
+	tampered.input[0].witness = bitcoin::Witness::from_slice(&witness);
+	let commitment = txn[0].clone();
+	let res = std::panic::catch_unwind(move || check_spends!(tampered, commitment));
+	assert!(res.is_err());
 }
 
 #[test]
