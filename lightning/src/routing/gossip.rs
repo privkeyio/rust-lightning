@@ -41,7 +41,9 @@ use crate::util::indexed_map::{
 	Entry as IndexedMapEntry, IndexedMap, OccupiedEntry as IndexedMapOccupiedEntry,
 };
 use crate::util::logger::{Level, Logger};
-use crate::util::scid_utils::{block_from_scid, scid_from_parts, MAX_SCID_BLOCK};
+use crate::util::scid_utils::{
+	block_from_scid, scid_from_parts, scid_predates_blake2b, MAX_SCID_BLOCK,
+};
 use crate::util::ser::{MaybeReadable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::wakers::Future;
 
@@ -2159,13 +2161,7 @@ impl<L: Logger> NetworkGraph<L> {
 	/// A funding output from before the BLAKE2b activation may have been spent where we cannot see
 	/// it, so a channel funded there is not added to the graph from P2P gossip.
 	fn predates_blake2b(&self, short_channel_id: u64) -> bool {
-		// The fuzz seeds replay mainnet gossip for scids in the first blocks.
-		if cfg!(fuzzing) {
-			return false;
-		}
-		Network::from_chain_hash(self.chain_hash)
-			.and_then(|network| bitcoin::consensus::Params::new(network).blake2b_height)
-			.map_or(false, |height| block_from_scid(short_channel_id) < height)
+		scid_predates_blake2b(self.chain_hash, short_channel_id)
 	}
 
 	/// Update channel information from a received announcement.

@@ -37,6 +37,20 @@ pub fn block_from_scid(short_channel_id: u64) -> u32 {
 	return (short_channel_id >> 40) as u32;
 }
 
+/// Whether `short_channel_id` refers to a funding output from before the BLAKE2b activation of the
+/// chain, which may have been spent where a node following BLAKE2b cannot see it (BOLT 7).
+pub(crate) fn scid_predates_blake2b(
+	chain_hash: bitcoin::constants::ChainHash, short_channel_id: u64,
+) -> bool {
+	// The fuzz seeds use mainnet scids from the first blocks.
+	if cfg!(fuzzing) {
+		return false;
+	}
+	bitcoin::Network::from_chain_hash(chain_hash)
+		.and_then(|network| bitcoin::consensus::Params::new(network).blake2b_height)
+		.is_some_and(|height| block_from_scid(short_channel_id) < height)
+}
+
 /// Extracts the tx index (bytes [2..4]) from the `short_channel_id`
 pub fn tx_index_from_scid(short_channel_id: u64) -> u32 {
 	return ((short_channel_id >> 16) & MAX_SCID_TX_INDEX) as u32;
@@ -298,6 +312,22 @@ pub(crate) mod fake_scid {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn test_scid_predates_blake2b() {
+		use bitcoin::constants::ChainHash;
+		use bitcoin::Network;
+
+		for (network, activation) in [(Network::Bitcoin, 961_640), (Network::Testnet4, 150_308)] {
+			let chain_hash = ChainHash::using_genesis_block(network);
+			let below = scid_from_parts(activation - 1, 1, 0).unwrap();
+			let at = scid_from_parts(activation, 1, 0).unwrap();
+			assert!(scid_predates_blake2b(chain_hash, below));
+			assert!(!scid_predates_blake2b(chain_hash, at));
+		}
+		let regtest = ChainHash::using_genesis_block(Network::Regtest);
+		assert!(!scid_predates_blake2b(regtest, scid_from_parts(1, 1, 0).unwrap()));
+	}
 
 	#[test]
 	fn test_block_from_scid() {

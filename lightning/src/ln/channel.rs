@@ -89,7 +89,7 @@ use crate::util::config::{
 };
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
-use crate::util::scid_utils::{block_from_scid, scid_from_parts};
+use crate::util::scid_utils::{block_from_scid, scid_from_parts, scid_predates_blake2b};
 use crate::util::ser::{Iterable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::wallet_utils::{ConfirmedUtxo, Input};
 use crate::{impl_readable_for_vec, impl_writeable_for_vec};
@@ -12951,6 +12951,10 @@ where
 
 		let short_channel_id = self.funding.get_short_channel_id()
 			.ok_or(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel has not been confirmed yet".to_owned()))?;
+		// A channel funded before the BLAKE2b activation is not announced (BOLT 7).
+		if scid_predates_blake2b(chain_hash, short_channel_id) {
+			return Err(ChannelError::Ignore("Channel was funded before the BLAKE2b activation".to_owned()));
+		}
 		let node_id = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?);
 		let counterparty_node_id = NodeId::from_pubkey(&self.context.get_counterparty_node_id());
