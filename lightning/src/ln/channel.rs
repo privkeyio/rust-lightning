@@ -13977,9 +13977,10 @@ where
 
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
-		min_funding_satoshis: u64, logger: &L,
+		min_funding_satoshis: u64, follow_blake2b: bool, logger: &L,
 	) -> Result<msgs::SpliceAck, InteractiveTxMsgError> {
 		self.validate_splice_init(msg).map_err(|e| self.quiescent_negotiation_err(e))?;
+		self.refuse_splice_without_unified_sigs(follow_blake2b)?;
 
 		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
 		let (queued_net_value, holder_balance) = self
@@ -14152,11 +14153,13 @@ where
 
 	pub(crate) fn tx_init_rbf<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, min_funding_satoshis: u64, logger: &L,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, min_funding_satoshis: u64,
+		follow_blake2b: bool, logger: &L,
 	) -> Result<msgs::TxAckRbf, InteractiveTxMsgError> {
 		let (holder_pubkeys, counterparty_funding_pubkey) = self
 			.validate_tx_init_rbf(msg, fee_estimator)
 			.map_err(|e| self.quiescent_negotiation_err(e))?;
+		self.refuse_splice_without_unified_sigs(follow_blake2b)?;
 
 		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
 		let (queued_net_value, holder_balance) = self
@@ -15491,6 +15494,20 @@ where
 		let was_quiescent = self.context.channel_state.is_quiescent();
 		self.context.channel_state.clear_quiescent();
 		was_quiescent
+	}
+
+	/// Following BLAKE2b, a splice of a channel without option_unified_sigs is answered with
+	/// `tx_abort` (BOLT 2). Called once the splice has been validated, so we are quiescent.
+	fn refuse_splice_without_unified_sigs(
+		&mut self, follow_blake2b: bool,
+	) -> Result<(), InteractiveTxMsgError> {
+		if follow_blake2b && !self.funding.get_channel_type().supports_unified_sigs() {
+			let err = ChannelError::Abort(AbortReason::InternalError(
+				"Splicing a channel without option_unified_sigs is not allowed",
+			));
+			return Err(self.quiescent_negotiation_err(err));
+		}
+		Ok(())
 	}
 
 	fn quiescent_negotiation_err(&mut self, err: ChannelError) -> InteractiveTxMsgError {
