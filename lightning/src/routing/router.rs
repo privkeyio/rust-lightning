@@ -1734,7 +1734,8 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC terminating with the given path.
 	///
-	/// Note that the [`BlindedPayInfo`] is ignored here.
+	/// Note that the fees in the [`BlindedPayInfo`] are ignored here, while its CLTV expiry delta
+	/// is used.
 	///
 	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	///
@@ -1861,7 +1862,9 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::PublicHop(hop) => hop.info.direction().cltv_expiry_delta as u32,
 			CandidateRouteHop::PrivateHop(hop) => hop.hint.cltv_expiry_delta as u32,
 			CandidateRouteHop::Blinded(hop) => hop.hint.payinfo.cltv_expiry_delta as u32,
-			CandidateRouteHop::OneHopBlinded(_) => 0,
+			// The recipient folds its `min_final_cltv_expiry_delta` into this delta (BOLT 4), so
+			// it applies even when the introduction node is the recipient.
+			CandidateRouteHop::OneHopBlinded(hop) => hop.hint.payinfo.cltv_expiry_delta as u32,
 		}
 	}
 
@@ -8491,7 +8494,7 @@ mod tests {
 			assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
 		} else {
 			assert_eq!(final_hop.fee_msat, 0);
-			assert_eq!(final_hop.cltv_expiry_delta, 0);
+			assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
 		}
 	}
 
