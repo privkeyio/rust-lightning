@@ -6673,6 +6673,14 @@ impl<
 				}
 			}
 
+			// A spend of a coinbase output does not relay until long after it matures under
+			// BLAKE2b proof of work, so no commitment transaction of the channel could be broadcast.
+			if self.config.read().unwrap().follow_blake2b && funding_transaction.is_coinbase() {
+				result = result.and(Err(APIError::APIMisuseError {
+					err: "A coinbase transaction cannot fund a channel".to_owned(),
+				}));
+			}
+
 			if funding_transaction.output.len() > u16::max_value() as usize {
 				result = result.and(Err(APIError::APIMisuseError {
 					err: "Transaction had more than 2^16 outputs, which is not supported"
