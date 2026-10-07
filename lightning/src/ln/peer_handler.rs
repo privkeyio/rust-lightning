@@ -414,6 +414,8 @@ impl BaseMessageHandler for ErroringMessageHandler {
 		features.set_route_blinding_optional();
 		#[cfg(simple_close)]
 		features.set_simple_close_optional();
+		features.set_blake2b_optional();
+		features.set_unified_sigs_optional();
 		features
 	}
 

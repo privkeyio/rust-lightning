@@ -3806,7 +3806,8 @@ impl<
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
-		);
+		)
+		.with_follow_blake2b(config.follow_blake2b);
 
 		ChannelManager {
 			config: RwLock::new(config),
@@ -4044,6 +4045,18 @@ impl<
 				return Err(APIError::APIMisuseError {
 					err: format!(
 						"Channel with temporary channel ID {temporary_channel_id} already exists!"
+					),
+				});
+			}
+		}
+
+		{
+			let config = self.config.read().unwrap();
+			let follow_blake2b = override_config.as_ref().unwrap_or(&*config).follow_blake2b;
+			if follow_blake2b && !peer_state.latest_features.supports_unified_sigs() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Peer {their_network_key} does not support option_unified_sigs, which new channels require"
 					),
 				});
 			}
@@ -5900,9 +5913,17 @@ impl<
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		optional_params: OptionalBolt11PaymentParams,
 	) -> Result<(), Bolt11PaymentError> {
+		let payment_hash = invoice.payment_hash();
+		if self.config.read().unwrap().follow_blake2b
+			&& !invoice.features().is_some_and(|f| f.supports_blake2b())
+		{
+			let logger =
+				WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id);
+			log_error!(logger, "Refusing to pay an invoice which does not set option_blake2b");
+			return Err(Bolt11PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound));
+		}
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let payment_hash = invoice.payment_hash();
 		self.pending_outbound_payments.pay_for_bolt11_invoice(
 			invoice,
 			payment_id,
@@ -14791,6 +14812,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			invoice = invoice.expiry_time(Duration::from_secs(invoice_expiry_delta_secs.into()));
 		}
 
+		if self.config.read().unwrap().follow_blake2b {
+			invoice = invoice.blake2b();
+		}
+
 		if let Some(amount_msats) = amount_msats {
 			invoice = invoice.amount_milli_satoshis(amount_msats);
 		}
@@ -18115,7 +18140,10 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	#[cfg(simple_close)]
 	features.set_simple_close_optional();
 	features.set_quiescence_optional();
-	features.set_splicing_optional();
+	// New channels use option_unified_sigs, which cannot be spliced yet.
+	if !config.follow_blake2b {
+		features.set_splicing_optional();
+	}
 
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
@@ -18130,6 +18158,11 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 
 	if config.enable_htlc_hold {
 		features.set_htlc_hold_optional();
+	}
+
+	if config.follow_blake2b {
+		features.set_blake2b_required();
+		features.set_unified_sigs_optional();
 	}
 
 	features
@@ -18963,14 +18996,13 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut channels = Vec::with_capacity(cmp::min(channel_count as usize, 128));
+		// A channel opened with option_unified_sigs stays readable if follow_blake2b is turned off.
+		let mut readable_channel_types = provided_channel_type_features(&args.config);
+		readable_channel_types.set_unified_sigs_required();
 		for _ in 0..channel_count {
 			let channel: FundedChannel<SP> = FundedChannel::read(
 				reader,
-				(
-					args.entropy_source,
-					args.signer_provider,
-					&provided_channel_type_features(&args.config),
-				),
+				(args.entropy_source, args.signer_provider, &readable_channel_types),
 			)?;
 			channels.push(channel);
 		}
@@ -20774,7 +20806,8 @@ impl<
 			args.message_router,
 			args.logger.clone(),
 		)
-		.with_async_payments_offers_cache(async_receive_offer_cache);
+		.with_async_payments_offers_cache(async_receive_offer_cache)
+		.with_follow_blake2b(args.config.follow_blake2b);
 
 		let channel_manager = ChannelManager {
 			chain_hash,

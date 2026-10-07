@@ -203,6 +203,11 @@ macro_rules! refund_explicit_metadata_builder_methods {
 macro_rules! refund_builder_methods { (
 	$self: ident, $self_type: ty, $return_type: ty, $return_value: expr, $secp_context: ty $(, $self_mut: tt)?
 ) => {
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn require_blake2b($($self_mut)* $self: $self_type) -> $return_type {
+		$self.refund.features.set_blake2b_required();
+		$return_value
+	}
 	/// Similar to [`RefundBuilder::new`] except, if [`RefundBuilder::path`] is called, the payer id
 	/// is derived from the given [`ExpandedKey`] and nonce. This provides sender privacy by using a
 	/// different payer id for each refund, assuming a different nonce is used.  Otherwise, the

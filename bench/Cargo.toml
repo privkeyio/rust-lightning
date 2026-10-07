@@ -20,3 +20,6 @@ codegen-units = 1
 lto = true
 panic = "abort"
 debug = true
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/privkeyio/rust-bitcoin", rev = "3c8cd5749b998069cb641fa150944760945329ff" }

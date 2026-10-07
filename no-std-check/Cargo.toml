@@ -11,3 +11,6 @@ lightning = { path = "../lightning", default-features = false }
 lightning-invoice = { path = "../lightning-invoice", default-features = false }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync", default-features = false }
 lightning-background-processor = { path = "../lightning-background-processor", default-features = false }
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/privkeyio/rust-bitcoin", rev = "3c8cd5749b998069cb641fa150944760945329ff" }

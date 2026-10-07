@@ -69,3 +69,6 @@ check-cfg = [
     "cfg(peer_storage)",
     "cfg(tor)",
 ]
+
+[patch.crates-io]
+bitcoin = { git = "https://github.com/privkeyio/rust-bitcoin", rev = "3c8cd5749b998069cb641fa150944760945329ff" }

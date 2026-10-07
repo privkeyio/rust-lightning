@@ -2156,6 +2156,18 @@ impl<L: Logger> NetworkGraph<L> {
 		Ok(())
 	}
 
+	/// A funding output from before the BLAKE2b activation may have been spent where we cannot see
+	/// it, so a channel funded there is not added to the graph from P2P gossip.
+	fn predates_blake2b(&self, short_channel_id: u64) -> bool {
+		// The fuzz seeds replay mainnet gossip for scids in the first blocks.
+		if cfg!(fuzzing) {
+			return false;
+		}
+		Network::from_chain_hash(self.chain_hash)
+			.and_then(|network| bitcoin::consensus::Params::new(network).blake2b_height)
+			.map_or(false, |height| block_from_scid(short_channel_id) < height)
+	}
+
 	/// Update channel information from a received announcement.
 	///
 	/// Generally [`Self::pre_channel_announcement_validation_check`] should have been called
@@ -2175,6 +2187,13 @@ impl<L: Logger> NetworkGraph<L> {
 			return Err(LightningError {
 				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+		}
+
+		if self.predates_blake2b(msg.short_channel_id) {
+			return Err(LightningError {
+				err: "Channel announcement predates the BLAKE2b activation".to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Gossip),
 			});
 		}
 
@@ -2474,6 +2493,13 @@ impl<L: Logger> NetworkGraph<L> {
 			return Err(LightningError {
 				err: "Channel update chain hash does not match genesis hash".to_owned(),
 				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+		}
+
+		if self.predates_blake2b(msg.short_channel_id) {
+			return Err(LightningError {
+				err: "Channel update predates the BLAKE2b activation".to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Gossip),
 			});
 		}
 
@@ -2970,6 +2996,51 @@ pub(crate) mod tests {
 			Ok(_) => panic!(),
 			Err(e) => assert_eq!(e.err, "Update older than last processed update"),
 		};
+	}
+
+	#[test]
+	fn ignores_channels_funded_before_blake2b_activation() {
+		let secp_ctx = Secp256k1::new();
+		let logger = test_utils::TestLogger::new();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+
+		for (network, activation) in [(Network::Bitcoin, 961_640), (Network::Testnet4, 150_308)] {
+			let network_graph = NetworkGraph::new(network, &logger);
+			let gossip_sync =
+				P2PGossipSync::new(&network_graph, None::<&test_utils::TestChainSource>, &logger);
+			for (height, accepted) in [(activation - 1, false), (activation, true)] {
+				let scid = scid_from_parts(height, 1, 0).unwrap();
+				let announcement = get_signed_channel_announcement(
+					|msg| {
+						msg.chain_hash = ChainHash::using_genesis_block(network);
+						msg.short_channel_id = scid;
+					},
+					node_1_privkey,
+					node_2_privkey,
+					&secp_ctx,
+				);
+				let res = gossip_sync.handle_channel_announcement(None, &announcement);
+				assert_eq!(res.is_ok(), accepted);
+				assert_eq!(network_graph.read_only().channels().contains_key(&scid), accepted);
+
+				let update = get_signed_channel_update(
+					|msg| {
+						msg.chain_hash = ChainHash::using_genesis_block(network);
+						msg.short_channel_id = scid;
+					},
+					node_1_privkey,
+					&secp_ctx,
+				);
+				let res = gossip_sync.handle_channel_update(None, &update);
+				if !accepted {
+					assert_eq!(
+						res.unwrap_err().err,
+						"Channel update predates the BLAKE2b activation"
+					);
+				}
+			}
+		}
 	}
 
 	#[test]

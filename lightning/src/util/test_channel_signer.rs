@@ -28,8 +28,6 @@ use crate::sync::{Arc, Mutex};
 use core::cmp;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use bitcoin::hashes::Hash;
-use bitcoin::sighash;
 use bitcoin::sighash::EcdsaSighashType;
 use bitcoin::transaction::Transaction;
 use bitcoin::Txid;
@@ -413,14 +411,14 @@ impl EcdsaChannelSigner for TestChannelSigner {
 			} else {
 				EcdsaSighashType::All
 			};
-			let sighash = &sighash::SighashCache::new(&*htlc_tx)
-				.p2wsh_signature_hash(
-					input,
-					&witness_script,
-					htlc_descriptor.htlc.to_bitcoin_amount(),
-					sighash_type,
-				)
-				.unwrap();
+			let sighash = crate::ln::chan_utils::channel_p2wsh_sighash(
+				htlc_tx,
+				input,
+				&witness_script,
+				htlc_descriptor.htlc.to_bitcoin_amount(),
+				sighash_type,
+				channel_type_features,
+			);
 			let countersignatory_htlc_key = HtlcKey::from_basepoint(
 				&secp_ctx,
 				&channel_parameters.counterparty_pubkeys().unwrap().htlc_basepoint,
@@ -429,7 +427,7 @@ impl EcdsaChannelSigner for TestChannelSigner {
 
 			secp_ctx
 				.verify_ecdsa(
-					&hash_to_message!(sighash.as_byte_array()),
+					&sighash,
 					&htlc_descriptor.counterparty_sig,
 					&countersignatory_htlc_key.to_public_key(),
 				)

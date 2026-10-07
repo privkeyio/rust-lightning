@@ -122,6 +122,7 @@ pub fn mine_transaction_without_consistency_checks<'a, 'b, 'c, 'd>(
 			time: height,
 			bits: CompactTarget::from_consensus(42),
 			nonce: 42,
+			v2: None,
 		},
 		txdata: Vec::new(),
 	};
@@ -277,6 +278,7 @@ pub fn create_dummy_header(prev_blockhash: BlockHash, time: u32) -> Header {
 		time,
 		bits: CompactTarget::from_consensus(42),
 		nonce: 42,
+		v2: None,
 	}
 }
 
@@ -2219,7 +2221,52 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 		let min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
 		assert!(total_value_out + min_fee <= total_value_in);
 	}
-	tx.verify(get_output).unwrap();
+	// libbitcoinconsensus predates SIGHASH_UNIFIED, so a unified signature is checked here instead,
+	// against the sighash rust-bitcoin computes from its hash type byte (tested against Bitcoin
+	// Knots' vectors) and the public keys its P2WSH witness script pushes.
+	let is_unified_sig = |item: &[u8]| {
+		item.len() > 2
+			&& item[0] == 0x30
+			&& item[1] as usize + 3 == item.len()
+			&& item[item.len() - 1] & bitcoin::sighash::SIGHASH_UNIFIED != 0
+	};
+	if !tx.input.iter().any(|input| input.witness.iter().any(is_unified_sig)) {
+		tx.verify(get_output).unwrap();
+		return;
+	}
+	let secp_ctx = bitcoin::secp256k1::Secp256k1::verification_only();
+	let prevouts: Vec<TxOut> =
+		tx.input.iter().map(|input| get_output(&input.previous_output).unwrap()).collect();
+	let mut cache = bitcoin::sighash::SighashCache::new(tx);
+	for (idx, input) in tx.input.iter().enumerate() {
+		let script = bitcoin::Script::from_bytes(input.witness.last().unwrap());
+		let pubkeys: Vec<PublicKey> = script
+			.instructions()
+			.filter_map(|ins| match ins {
+				Ok(bitcoin::script::Instruction::PushBytes(b)) => {
+					PublicKey::from_slice(b.as_bytes()).ok()
+				},
+				_ => None,
+			})
+			.collect();
+		for sig in input.witness.iter().filter(|item| is_unified_sig(item)) {
+			let hash = cache
+				.unified_signature_hash(
+					idx,
+					&bitcoin::sighash::Prevouts::All(&prevouts),
+					bitcoin::sighash::UnifiedSpend::SegwitV0(script),
+					sig[sig.len() - 1],
+				)
+				.unwrap();
+			let msg = bitcoin::secp256k1::Message::from_digest(hash.to_byte_array());
+			let sig =
+				bitcoin::secp256k1::ecdsa::Signature::from_der(&sig[..sig.len() - 1]).unwrap();
+			assert!(
+				pubkeys.iter().any(|pk| secp_ctx.verify_ecdsa(&msg, &sig, pk).is_ok()),
+				"unified signature on input {idx} does not verify"
+			);
+		}
+	}
 }
 
 #[macro_export]
@@ -4803,6 +4850,7 @@ pub fn test_legacy_channel_config() -> UserConfig {
 	default_config.channel_config.max_dust_htlc_exposure =
 		MaxDustHTLCExposure::FeeRateMultiplier(50_000_000 / 253);
 	default_config.reject_inbound_splices = false;
+	default_config.follow_blake2b = false;
 	default_config
 }
 

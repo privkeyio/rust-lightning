@@ -74,6 +74,12 @@ macro_rules! invoice_builder_methods_common { (
 		$return_value
 	}
 
+	#[cfg_attr(c_bindings, allow(dead_code))]
+	pub(crate) fn require_blake2b($($self_mut)* $self: $self_type) -> $return_type {
+		$invoice_fields.features.set_blake2b_required();
+		$return_value
+	}
+
 	#[doc = concat!("Sets [`", stringify!($invoice_type), "::invoice_features`]")]
 	#[doc = "to indicate MPP may be used. Otherwise, MPP is disallowed."]
 	pub fn allow_mpp($($self_mut)* $self: $self_type) -> $return_type {
