@@ -6890,7 +6890,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			eligible_features.clear_anchor_zero_fee_commitments();
 		}
 
-		let next_channel_type = get_initial_channel_type(user_config, &eligible_features);
+		let mut next_channel_type = get_initial_channel_type(user_config, &eligible_features);
+		// The peer agreed to option_unified_sigs when we opened, so a retry keeps it even if the
+		// config used for the retry does not follow BLAKE2b.
+		if channel_type.supports_unified_sigs() {
+			next_channel_type.set_unified_sigs_required();
+		}
 		if !next_channel_type.supports_anchors_zero_fee_htlc_tx()
 			&& !next_channel_type.supports_anchor_zero_fee_commitments()
 			&& funding.holder_selected_channel_reserve_satoshis == 0

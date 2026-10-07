@@ -18140,7 +18140,10 @@ pub fn provided_init_features(config: &UserConfig) -> InitFeatures {
 	#[cfg(simple_close)]
 	features.set_simple_close_optional();
 	features.set_quiescence_optional();
-	features.set_splicing_optional();
+	// New channels use option_unified_sigs, which cannot be spliced yet.
+	if !config.follow_blake2b {
+		features.set_splicing_optional();
+	}
 
 	if config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx {
 		features.set_anchors_zero_fee_htlc_tx_optional();
