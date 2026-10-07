@@ -138,10 +138,13 @@ fn test_unified_channel_cannot_splice() {
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+	assert!(!nodes[1].node.init_features().supports_splicing());
 	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let res = nodes[0].node.splice_channel(&channel_id, &nodes[1].node.get_our_node_id());
 	match res {
-		Err(APIError::APIMisuseError { err }) => assert!(err.contains("option_unified_sigs")),
+		Err(APIError::ChannelUnavailable { err }) => {
+			assert!(err.contains("Peer does not support splicing"))
+		},
 		_ => panic!("Wrong result {:?}", res.err()),
 	}
 }
