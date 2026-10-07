@@ -12558,6 +12558,19 @@ where
 			)?;
 
 			if is_funding_tx_confirmed {
+				// A spend of a coinbase output does not relay for far longer than the coinbase
+				// maturity under BLAKE2b proof of work, so no commitment transaction of a
+				// coinbase-funded channel could be broadcast while its HTLCs expire, so the fundee
+				// fails it (BOLT 2). A 0-conf channel, already in use on trust, is exempt.
+				if tx.is_coinbase()
+					&& user_config.follow_blake2b
+					&& !self.funding.is_outbound()
+					&& !self.funding.get_channel_type().supports_zero_conf()
+					&& self.context.minimum_depth.unwrap_or(0) > 0
+				{
+					let err = "Funding transaction is a coinbase, which cannot be spent until it matures";
+					return Err(ClosureReason::ProcessingError { err: err.to_owned() });
+				}
 				// If this is a coinbase transaction and not a 0-conf channel
 				// we should update our min_depth to 100 to handle coinbase maturity
 				if tx.is_coinbase() &&
