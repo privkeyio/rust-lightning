@@ -5101,7 +5101,7 @@ impl<
 	///
 	/// Initiating a splice requires that the channel counterparty supports splicing. Any
 	/// channel (no matter the type) can be spliced, as long as the counterparty is currently
-	/// connected.
+	/// connected, except that with [`UserConfig::follow_blake2b`] no channel can be spliced yet.
 	///
 	/// # Return Value
 	///
@@ -5147,6 +5147,18 @@ impl<
 		match peer_state.channel_by_id.entry(*channel_id) {
 			hash_map::Entry::Occupied(chan_phase_entry) => {
 				if let Some(chan) = chan_phase_entry.get().as_funded() {
+					// Following BLAKE2b, a channel without option_unified_sigs is not spliced: the
+					// splice would sign the previous funding output without the opt-in (BOLT 2).
+					if self.config.read().unwrap().follow_blake2b
+						&& !chan.funding.get_channel_type().supports_unified_sigs()
+					{
+						return Err(APIError::APIMisuseError {
+							err: format!(
+								"Channel {} does not use option_unified_sigs, so it cannot be spliced",
+								channel_id
+							),
+						});
+					}
 					chan.splice_channel()
 				} else {
 					Err(APIError::ChannelUnavailable {
@@ -7115,6 +7127,15 @@ impl<
 			match peer_state.channel_by_id.get_mut(channel_id) {
 				Some(channel) => match channel.as_funded_mut() {
 					Some(chan) => {
+						// See `splice_channel`: no splice of a channel without option_unified_sigs.
+						if self.config.read().unwrap().follow_blake2b
+							&& !chan.funding.get_channel_type().supports_unified_sigs()
+						{
+							result = Err(SpliceContributionError::NegotiationFailed {
+								reason: events::NegotiationFailureReason::ContributionInvalid,
+							});
+							return push_discard_funding(contribution);
+						}
 						let locktime = bitcoin::absolute::LockTime::from_consensus(
 							locktime.unwrap_or_else(|| self.current_best_block().height),
 						);
@@ -13827,7 +13848,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				))
 			},
 			hash_map::Entry::Occupied(mut chan_entry) => {
-				if self.config.read().unwrap().reject_inbound_splices {
+				// Following BLAKE2b, a splice of a channel without option_unified_sigs is answered with
+				// `tx_abort` by `splice_init` (BOLT 2), even when inbound splices are not accepted.
+				let follow_blake2b = self.config.read().unwrap().follow_blake2b;
+				let refuse_without_unified_sigs = follow_blake2b
+					&& chan_entry.get().as_funded().is_some_and(|chan| {
+						!chan.funding.get_channel_type().supports_unified_sigs()
+					});
+				if self.config.read().unwrap().reject_inbound_splices
+					&& !refuse_without_unified_sigs
+				{
 					let err = ChannelError::WarnAndDisconnect(
 						"Inbound channel splices are currently not allowed".to_owned(),
 					);
@@ -13841,6 +13871,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						self.config.read().unwrap().channel_handshake_limits.min_funding_satoshis,
+						follow_blake2b,
 						&self.logger,
 					) {
 						Ok(splice_ack_msg) => {
@@ -13893,12 +13924,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
 					let user_channel_id = funded_channel.context.get_user_id();
+					let follow_blake2b = self.config.read().unwrap().follow_blake2b;
 					match funded_channel.tx_init_rbf(
 						msg,
 						&self.entropy_source,
 						&self.get_our_node_id(),
 						&self.fee_estimator,
 						self.config.read().unwrap().channel_handshake_limits.min_funding_satoshis,
+						follow_blake2b,
 						&self.logger,
 					) {
 						Ok(tx_ack_rbf_msg) => {
