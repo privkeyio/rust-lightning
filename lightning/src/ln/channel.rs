@@ -89,7 +89,7 @@ use crate::util::config::{
 };
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, Record, WithContext};
-use crate::util::scid_utils::{block_from_scid, scid_from_parts};
+use crate::util::scid_utils::{block_from_scid, scid_from_parts, scid_predates_blake2b};
 use crate::util::ser::{Iterable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::wallet_utils::{ConfirmedUtxo, Input};
 use crate::{impl_readable_for_vec, impl_writeable_for_vec};
@@ -12558,6 +12558,19 @@ where
 			)?;
 
 			if is_funding_tx_confirmed {
+				// A spend of a coinbase output does not relay for far longer than the coinbase
+				// maturity under BLAKE2b proof of work, so no commitment transaction of a
+				// coinbase-funded channel could be broadcast while its HTLCs expire, so the fundee
+				// fails it (BOLT 2). A 0-conf channel, already in use on trust, is exempt.
+				if tx.is_coinbase()
+					&& user_config.follow_blake2b
+					&& !self.funding.is_outbound()
+					&& !self.funding.get_channel_type().supports_zero_conf()
+					&& self.context.minimum_depth.unwrap_or(0) > 0
+				{
+					let err = "Funding transaction is a coinbase, which cannot be spent until it matures";
+					return Err(ClosureReason::ProcessingError { err: err.to_owned() });
+				}
 				// If this is a coinbase transaction and not a 0-conf channel
 				// we should update our min_depth to 100 to handle coinbase maturity
 				if tx.is_coinbase() &&
@@ -12938,6 +12951,10 @@ where
 
 		let short_channel_id = self.funding.get_short_channel_id()
 			.ok_or(ChannelError::Ignore("Cannot get a ChannelAnnouncement if the channel has not been confirmed yet".to_owned()))?;
+		// A channel funded before the BLAKE2b activation is not announced (BOLT 7).
+		if scid_predates_blake2b(chain_hash, short_channel_id) {
+			return Err(ChannelError::Ignore("Channel was funded before the BLAKE2b activation".to_owned()));
+		}
 		let node_id = NodeId::from_pubkey(&node_signer.get_node_id(Recipient::Node)
 			.map_err(|_| ChannelError::Ignore("Failed to retrieve own public key".to_owned()))?);
 		let counterparty_node_id = NodeId::from_pubkey(&self.context.get_counterparty_node_id());
@@ -13964,9 +13981,10 @@ where
 
 	pub(crate) fn splice_init<ES: EntropySource, L: Logger>(
 		&mut self, msg: &msgs::SpliceInit, entropy_source: &ES, holder_node_id: &PublicKey,
-		min_funding_satoshis: u64, logger: &L,
+		min_funding_satoshis: u64, follow_blake2b: bool, logger: &L,
 	) -> Result<msgs::SpliceAck, InteractiveTxMsgError> {
 		self.validate_splice_init(msg).map_err(|e| self.quiescent_negotiation_err(e))?;
+		self.refuse_splice_without_unified_sigs(follow_blake2b)?;
 
 		let feerate = FeeRate::from_sat_per_kwu(msg.funding_feerate_per_kw as u64);
 		let (queued_net_value, holder_balance) = self
@@ -14139,11 +14157,13 @@ where
 
 	pub(crate) fn tx_init_rbf<ES: EntropySource, F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxInitRbf, entropy_source: &ES, holder_node_id: &PublicKey,
-		fee_estimator: &LowerBoundedFeeEstimator<F>, min_funding_satoshis: u64, logger: &L,
+		fee_estimator: &LowerBoundedFeeEstimator<F>, min_funding_satoshis: u64,
+		follow_blake2b: bool, logger: &L,
 	) -> Result<msgs::TxAckRbf, InteractiveTxMsgError> {
 		let (holder_pubkeys, counterparty_funding_pubkey) = self
 			.validate_tx_init_rbf(msg, fee_estimator)
 			.map_err(|e| self.quiescent_negotiation_err(e))?;
+		self.refuse_splice_without_unified_sigs(follow_blake2b)?;
 
 		let feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
 		let (queued_net_value, holder_balance) = self
@@ -15478,6 +15498,20 @@ where
 		let was_quiescent = self.context.channel_state.is_quiescent();
 		self.context.channel_state.clear_quiescent();
 		was_quiescent
+	}
+
+	/// Following BLAKE2b, a splice of a channel without option_unified_sigs is answered with
+	/// `tx_abort` (BOLT 2). Called once the splice has been validated, so we are quiescent.
+	fn refuse_splice_without_unified_sigs(
+		&mut self, follow_blake2b: bool,
+	) -> Result<(), InteractiveTxMsgError> {
+		if follow_blake2b && !self.funding.get_channel_type().supports_unified_sigs() {
+			let err = ChannelError::Abort(AbortReason::InternalError(
+				"Splicing a channel without option_unified_sigs is not allowed",
+			));
+			return Err(self.quiescent_negotiation_err(err));
+		}
+		Ok(())
 	}
 
 	fn quiescent_negotiation_err(&mut self, err: ChannelError) -> InteractiveTxMsgError {

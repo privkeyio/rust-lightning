@@ -282,3 +282,176 @@ fn test_pay_bolt11_invoice_between_blake2b_nodes() {
 	};
 	claim_payment(&nodes[0], &[&nodes[1]], preimage);
 }
+
+#[test]
+fn test_fundee_fails_coinbase_funded_channel() {
+	// Under BLAKE2b proof of work a spend of a coinbase output does not relay for far longer than
+	// its maturity, so the fundee fails such a channel once the funding confirms (BOLT 2).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = unified_config(true);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
+
+	let (channel_id, tx, _) =
+		create_coinbase_funding_transaction(&nodes[0], &node_b_id, 100000, 42);
+	// Our own checked funding path refuses a coinbase (see `test_no_coinbase_funding`), so fund
+	// through the manual path, as a funder that does not follow these rules could.
+	let outpoint = crate::chain::transaction::OutPoint { txid: tx.compute_txid(), index: 0 };
+	nodes[0]
+		.node
+		.unsafe_manual_funding_transaction_generated(channel_id, node_b_id, outpoint)
+		.unwrap();
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
+	nodes[1].node.handle_funding_created(node_a_id, &funding_created);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &node_a_id);
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_a_id);
+	nodes[0].node.handle_funding_signed(node_b_id, &funding_signed);
+	check_added_monitors(&nodes[0], 1);
+	// The manual funding path also tells us when the funding is safe to broadcast.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.iter().any(|ev| matches!(ev, Event::ChannelPending { .. })));
+	assert!(events.iter().any(|ev| matches!(ev, Event::FundingTxBroadcastSafe { .. })));
+
+	confirm_transaction_at(&nodes[1], &tx, 1);
+	let err = "Funding transaction is a coinbase, which cannot be spent until it matures";
+	check_closed_event(
+		&nodes[1],
+		1,
+		ClosureReason::ProcessingError { err: err.to_owned() },
+		&[node_a_id],
+		100000,
+	);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.list_channels().is_empty());
+
+	// The rule is the fundee's: the funder keeps the channel when the coinbase confirms.
+	confirm_transaction_at(&nodes[0], &tx, 1);
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
+fn test_no_splice_of_channel_without_unified_sigs() {
+	// A node following BLAKE2b neither splices a channel without option_unified_sigs nor accepts
+	// such a splice, answering it with tx_abort (BOLT 2).
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy = test_default_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy.clone()), Some(legacy.clone())]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	assert!(!nodes[1].node.list_channels()[0]
+		.channel_type
+		.as_ref()
+		.unwrap()
+		.supports_unified_sigs());
+	// A contribution prepared before following BLAKE2b.
+	provide_utxo_reserves(&nodes, 1, bitcoin::Amount::from_sat(100_000));
+	let template = nodes[1].node.splice_channel(&channel_id, &node_a_id).unwrap();
+	let feerate = bitcoin::FeeRate::from_sat_per_kwu(
+		crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW as u64,
+	);
+	let wallet = crate::util::wallet_utils::WalletSync::new(
+		std::sync::Arc::clone(&nodes[1].wallet_source),
+		nodes[1].logger,
+	);
+	let contribution = template
+		.splice_in_sync(bitcoin::Amount::from_sat(50_000), feerate, bitcoin::FeeRate::MAX, &wallet)
+		.unwrap();
+
+	let mut follows = legacy;
+	follows.follow_blake2b = true;
+	nodes[1].node.set_current_config(follows);
+
+	match nodes[1].node.splice_channel(&channel_id, &node_a_id) {
+		Err(APIError::APIMisuseError { err }) => assert!(err.contains("option_unified_sigs")),
+		res => panic!("Wrong result {:?}", res.err()),
+	}
+	match nodes[1].node.funding_contributed(&channel_id, &node_a_id, contribution, None) {
+		Err(crate::ln::channelmanager::SpliceContributionError::NegotiationFailed {
+			reason: crate::events::NegotiationFailureReason::ContributionInvalid,
+		}) => {},
+		res => panic!("Wrong result {:?}", res),
+	}
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert!(events.iter().any(|ev| matches!(ev, Event::DiscardFunding { .. })));
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	crate::ln::splicing_tests::initiate_splice_in(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		bitcoin::Amount::from_sat(50_000),
+	);
+	let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_b_id);
+	nodes[1].node.handle_stfu(node_a_id, &stfu);
+	let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_a_id);
+	nodes[0].node.handle_stfu(node_b_id, &stfu);
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_b_id);
+	nodes[1].node.handle_splice_init(node_a_id, &splice_init);
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_a_id);
+	assert!(String::from_utf8_lossy(&tx_abort.data).contains("option_unified_sigs"));
+	nodes[0].node.handle_tx_abort(node_b_id, &tx_abort);
+	if let Some(MessageSendEvent::SendTxAbort { msg, .. }) = nodes[0]
+		.node
+		.get_and_clear_pending_msg_events()
+		.into_iter()
+		.find(|ev| matches!(ev, MessageSendEvent::SendTxAbort { .. }))
+	{
+		nodes[1].node.handle_tx_abort(node_a_id, &msg);
+	}
+	// The initiator releases its wallet inputs and learns why the splice failed; nothing else is
+	// left in flight on either side.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.iter().any(|ev| matches!(ev, Event::DiscardFunding { .. })));
+	assert!(events.iter().any(|ev| matches!(ev, Event::SpliceNegotiationFailed { .. })));
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// The channel is still usable in both directions.
+	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+	send_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+}
+
+#[test]
+fn test_no_coinbase_funding() {
+	// A node following BLAKE2b does not fund a channel from a coinbase transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let config = unified_config(true);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
+	let accept_channel = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	nodes[0].node.handle_accept_channel(node_b_id, &accept_channel);
+
+	let (channel_id, tx, _) =
+		create_coinbase_funding_transaction(&nodes[0], &node_b_id, 100000, 42);
+	match nodes[0].node.funding_transaction_generated(channel_id, node_b_id, tx) {
+		Err(APIError::APIMisuseError { err }) => assert!(err.contains("coinbase")),
+		res => panic!("Wrong result {:?}", res),
+	}
+	let _ = nodes[0].node.get_and_clear_pending_events();
+	let _ = nodes[0].node.get_and_clear_pending_msg_events();
+}
