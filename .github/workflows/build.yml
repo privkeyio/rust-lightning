@@ -296,7 +296,8 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: stable
+      # Pinned: clippy 1.97 and newer flag upstream code this branch does not change.
+      TOOLCHAIN: 1.95.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -348,6 +349,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
       - name: Test tor connections using lightning-net-tokio
         run: |
+          source ci/ci-tests-common.sh
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:
