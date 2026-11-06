@@ -96,7 +96,6 @@ use crate::ln::outbound_payment::{
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
 use crate::offers::contacts::ContactSecrets;
-#[cfg(not(c_bindings))]
 use crate::offers::currency::CurrencyConversion;
 use crate::offers::currency::NullCurrencyConversion;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};

@@ -73,6 +73,7 @@ use crate::onion_message::offers::OffersMessage;
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::NodeSigner;
 use crate::util::ser::{MaybeReadable, Writeable};
+use crate::util::test_utils::TestCurrencyConversion;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
 /// constant we apply to blinded path expiry in these tests.
@@ -1693,7 +1694,7 @@ fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder()
+		.create_offer_builder_with_conversion(&TestCurrencyConversion {})
 		.unwrap()
 		.amount(Amount::Currency {
 			iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
@@ -1703,7 +1704,15 @@ fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 		.unwrap();
 
 	let payment_id = PaymentId([1; 32]);
-	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	bob.node
+		.pay_for_offer_with_conversion(
+			&offer,
+			None,
+			payment_id,
+			Default::default(),
+			&TestCurrencyConversion {},
+		)
+		.unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
@@ -1717,6 +1726,9 @@ fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
+			payer_bip_353_name: None,
 		},
 		payment_metadata: None,
 	});
@@ -3194,6 +3206,9 @@ fn pays_for_offer_between_blake2b_nodes() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
+			payer_bip_353_name: None,
 		},
 		payment_metadata: None,
 	});
