@@ -646,7 +646,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	pub fn create_compact_offer_builder<'a, ES: EntropySource, CC: CurrencyConversion>(
 		&'a self, entropy_source: ES, converter: &'a CC, intro_node_id: PublicKey,
 		intro_short_channel_id: Option<u64>,
-	) -> Result<(OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Nonce), Bolt12SemanticError> {
+	) -> Result<(OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Nonce), Bolt12SemanticError>
+	{
 		self.create_offer_builder_intern(&entropy_source, converter, |_, context, _| {
 			let peers = vec![MessageForwardNode {
 				node_id: intro_node_id,

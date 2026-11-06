@@ -15337,7 +15337,10 @@ impl<
 	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All, NullCurrencyConversion>);
+	create_offer_builder!(
+		self,
+		OfferBuilder<'_, DerivedMetadata, secp256k1::All, NullCurrencyConversion>
+	);
 
 	/// Same as [`Self::create_offer_builder`], but validates a currency-denominated
 	/// amount with `conversion` instead of rejecting every ISO 4217 amount.
@@ -15351,7 +15354,9 @@ impl<
 		&'a self, conversion: &'a CC,
 	) -> Result<OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Bolt12SemanticError> {
 		let builder = self.flow.create_offer_builder(
-			&self.entropy_source, conversion, self.get_peers_for_blinded_path(),
+			&self.entropy_source,
+			conversion,
+			self.get_peers_for_blinded_path(),
 		)?;
 		Ok(builder.into())
 	}
@@ -15456,7 +15461,11 @@ impl<
 		optional_params: OptionalOfferPaymentParams,
 	) -> Result<(), Bolt12SemanticError> {
 		self.pay_for_offer_with_conversion(
-			offer, amount_msats, payment_id, optional_params, &NullCurrencyConversion,
+			offer,
+			amount_msats,
+			payment_id,
+			optional_params,
+			&NullCurrencyConversion,
 		)
 	}
 
@@ -19820,10 +19829,8 @@ impl<
 	fn read<Reader: io::Read>(
 		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
 	) -> Result<Self, DecodeError> {
-		let (best_block, chan_manager) = <(
-			BlockLocator,
-			ChannelManager<M, T, ES, NS, SP, F, R, MR, L>,
-		)>::read(reader, args)?;
+		let (best_block, chan_manager) =
+			<(BlockLocator, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
 		Ok((best_block, Arc::new(chan_manager)))
 	}
 }

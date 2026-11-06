@@ -3631,7 +3631,10 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let payer_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion).amount_msats(1).build().unwrap();
+		let payer_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion)
+			.amount_msats(1)
+			.build()
+			.unwrap();
 		assert!(payer_offer.as_ref().len() <= PAYER_OFFER_MAX_BYTES);
 		let contact_secrets = ContactSecrets::new(ContactSecret::new([3; 32]));
 
@@ -3686,7 +3689,10 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
-		let payer_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion).amount_msats(1).build().unwrap();
+		let payer_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion)
+			.amount_msats(1)
+			.build()
+			.unwrap();
 
 		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
@@ -3737,8 +3743,10 @@ mod tests {
 		let parsed = InvoiceRequest::try_from(buffer).unwrap();
 		assert_eq!(parsed.payer_bip_353_name(), invoice_request.payer_bip_353_name());
 
-		let published_offer =
-			OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion).amount_msats(1).build().unwrap();
+		let published_offer = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
+			.amount_msats(1)
+			.build()
+			.unwrap();
 		assert!(parsed.payer_bip_353_name().unwrap().matches_offer(&published_offer).is_ok());
 
 		let payment_paths = payment_paths();
