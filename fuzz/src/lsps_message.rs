@@ -9,6 +9,7 @@ use lightning::chain::{chainmonitor, BlockLocator};
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::ln::wire::CustomMessageReader;
+use lightning::offers::currency::NullCurrencyConversion;
 use lightning::onion_message::messenger::DefaultMessageRouter;
 use lightning::routing::gossip::NetworkGraph;
 use lightning::routing::router::DefaultRouter;
@@ -68,6 +69,7 @@ pub fn do_test(data: &[u8]) {
 		Arc::clone(&tx_broadcaster),
 		Arc::clone(&router),
 		Arc::clone(&msg_router),
+		Arc::new(NullCurrencyConversion),
 		Arc::clone(&logger),
 		Arc::clone(&keys_manager),
 		Arc::clone(&keys_manager),

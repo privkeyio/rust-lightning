@@ -65,6 +65,7 @@ use lightning::ln::msgs::{
 use lightning::ln::outbound_payment::RecipientOnionFields;
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
+use lightning::offers::currency::NullCurrencyConversion;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{
@@ -1188,6 +1189,7 @@ impl<'a> HarnessNode<'a> {
 			Arc::clone(&broadcaster),
 			router,
 			router,
+			Arc::new(NullCurrencyConversion),
 			Arc::clone(&logger),
 			Arc::clone(&keys_manager),
 			Arc::clone(&keys_manager),
@@ -1585,6 +1587,7 @@ impl<'a> HarnessNode<'a> {
 			tx_broadcaster: Arc::clone(&self.broadcaster),
 			router,
 			message_router: router,
+			currency_conversion: Arc::new(NullCurrencyConversion),
 			logger: Arc::clone(&logger),
 			config: build_node_config(chan_type),
 			channel_monitors: monitor_refs,
