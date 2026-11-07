@@ -244,7 +244,7 @@ jobs:
       - name: Install honggfuzz build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils-dev libunwind-dev libblocksruntime-dev xxd
+          sudo apt-get install -y binutils-dev binutils-gold libunwind-dev libblocksruntime-dev xxd
       - name: Clone fuzzing corpus
         run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
       - name: Symlink corpus into hfuzz_workspace
