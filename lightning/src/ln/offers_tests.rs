@@ -64,7 +64,9 @@ use crate::offers::invoice_error::InvoiceError;
 use crate::offers::contacts::{PayerContact, PAYER_OFFER_MAX_BYTES};
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Amount, CurrencyCode, OfferBuilder};
+#[cfg(not(c_bindings))]
+use crate::offers::offer::{Amount, CurrencyCode};
+use crate::offers::offer::OfferBuilder;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::payer_proof::PayerProof;
 use crate::onion_message::dns_resolution::HumanReadableName;
@@ -73,6 +75,8 @@ use crate::onion_message::offers::OffersMessage;
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::NodeSigner;
 use crate::util::ser::{MaybeReadable, Writeable};
+#[cfg(not(c_bindings))]
+use crate::util::test_utils::TestCurrencyConversion;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
 /// constant we apply to blinded path expiry in these tests.
@@ -805,13 +809,13 @@ fn pays_for_offer_with_blip42_contact_fields() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let (alice_offer_builder, alice_offer_nonce) =
+	let (mut alice_offer_builder, alice_offer_nonce) =
 		alice.node.create_compact_offer_builder(bob_id).unwrap();
 	let alice_offer = alice_offer_builder.amount_msats(10_000_000).build().unwrap();
 
 	// Bob saves Alice as a contact before paying her, deriving the shared contact secret from
 	// his own compact offer and hers.
-	let (bob_offer_builder, bob_offer_nonce) =
+	let (mut bob_offer_builder, bob_offer_nonce) =
 		bob.node.create_compact_offer_builder(alice_id).unwrap();
 	let bob_offer = bob_offer_builder.build().unwrap();
 	// Compact builder must attach the Alice↔Bob inbound SCID so the path stays under the
@@ -956,10 +960,10 @@ fn pays_for_offer_with_blip42_bip_353_name() {
 	let bob = &nodes[1];
 	let bob_id = bob.node.get_our_node_id();
 
-	let (alice_offer_builder, _) = alice.node.create_compact_offer_builder(bob_id).unwrap();
+	let (mut alice_offer_builder, _) = alice.node.create_compact_offer_builder(bob_id).unwrap();
 	let alice_offer = alice_offer_builder.amount_msats(10_000_000).build().unwrap();
 
-	let (bob_offer_builder, bob_offer_nonce) =
+	let (mut bob_offer_builder, bob_offer_nonce) =
 		bob.node.create_compact_offer_builder(alice_id).unwrap();
 	let bob_offer = bob_offer_builder.build().unwrap();
 	let bob_secrets =
@@ -1679,6 +1683,7 @@ fn pays_bolt12_invoice_asynchronously() {
 }
 
 #[test]
+#[cfg(not(c_bindings))]
 fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -1693,7 +1698,7 @@ fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 	let bob_id = bob.node.get_our_node_id();
 
 	let offer = alice.node
-		.create_offer_builder()
+		.create_offer_builder_with_conversion(&TestCurrencyConversion {})
 		.unwrap()
 		.amount(Amount::Currency {
 			iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
@@ -1703,7 +1708,15 @@ fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 		.unwrap();
 
 	let payment_id = PaymentId([1; 32]);
-	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	bob.node
+		.pay_for_offer_with_conversion(
+			&offer,
+			None,
+			payment_id,
+			Default::default(),
+			&TestCurrencyConversion {},
+		)
+		.unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
 	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
@@ -1717,6 +1730,9 @@ fn creates_and_pays_bolt12_invoice_for_currency_denominated_offer() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
+			payer_bip_353_name: None,
 		},
 		payment_metadata: None,
 	});
@@ -3194,6 +3210,9 @@ fn pays_for_offer_between_blake2b_nodes() {
 			quantity: None,
 			payer_note_truncated: None,
 			human_readable_name: None,
+			contact_secret: None,
+			payer_offer: None,
+			payer_bip_353_name: None,
 		},
 		payment_metadata: None,
 	});

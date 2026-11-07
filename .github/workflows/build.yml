@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   ext-test:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -58,6 +58,8 @@ jobs:
       script: ci/ci-tests-sync.sh
 
   coverage:
+    # Uploads to upstream's codecov project.
+    if: github.repository == 'lightningdevkit/rust-lightning'
     needs: fuzz
     strategy:
       fail-fast: false
@@ -195,7 +197,7 @@ jobs:
           RUSTDOCFLAGS: '--cfg=taproot'
 
   check_docs:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       # While docs.rs builds using a nightly compiler (and we use some nightly features),
       # nightly ends up randomly breaking builds occasionally, so we instead use beta
@@ -213,7 +215,7 @@ jobs:
         run: ci/check-docsrs.sh
 
   fuzz_sanity:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       TOOLCHAIN: 1.75
     steps:
@@ -230,7 +232,7 @@ jobs:
           RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --manifest-path fuzz-real-hashes/Cargo.toml --quiet --color always --bins -j8
 
   fuzz:
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     env:
       TOOLCHAIN: 1.75
     steps:
@@ -239,6 +241,10 @@ jobs:
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+      - name: Install honggfuzz build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils-dev binutils-gold libunwind-dev libblocksruntime-dev xxd
       - name: Clone fuzzing corpus
         run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
       - name: Symlink corpus into hfuzz_workspace
@@ -296,7 +302,8 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: stable
+      # Pinned: clippy 1.97 and newer flag upstream code this branch does not change.
+      TOOLCHAIN: 1.95.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -348,6 +355,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
       - name: Test tor connections using lightning-net-tokio
         run: |
+          source ci/ci-tests-common.sh
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:

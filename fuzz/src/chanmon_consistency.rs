@@ -65,6 +65,7 @@ use lightning::ln::msgs::{
 use lightning::ln::outbound_payment::RecipientOnionFields;
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
+use lightning::offers::currency::NullCurrencyConversion;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::router::{
@@ -1148,6 +1149,7 @@ impl<'a> HarnessNode<'a> {
 		node_id: u8, wallet: Arc<TestWalletSource>, fee_estimator: Arc<FuzzEstimator>,
 		broadcaster: Arc<TestBroadcaster>, persistence_style: ChannelMonitorUpdateStatus,
 		deferred: bool, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
+		follow_blake2b: bool,
 	) -> Self {
 		let logger = Self::build_logger(node_id, out);
 		let node_secret = SecretKey::from_slice(&[
@@ -1188,11 +1190,12 @@ impl<'a> HarnessNode<'a> {
 			Arc::clone(&broadcaster),
 			router,
 			router,
+			Arc::new(NullCurrencyConversion),
 			Arc::clone(&logger),
 			Arc::clone(&keys_manager),
 			Arc::clone(&keys_manager),
 			Arc::clone(&keys_manager),
-			build_node_config(chan_type),
+			build_node_config(chan_type, follow_blake2b),
 			params,
 			best_block_timestamp,
 		);
@@ -1481,8 +1484,14 @@ impl<'a> HarnessNode<'a> {
 				}
 			},
 			Err(e) => {
+				// Nodes following BLAKE2b do not signal splicing, so their peers refuse it. All
+				// nodes share the setting, so our own config stands for the peer's.
+				let follows_blake2b = self.node.get_current_config().follow_blake2b;
 				assert!(
-					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice"))
+						|| (follows_blake2b
+							&& matches!(e, APIError::ChannelUnavailable { ref err }
+								if err == "Peer does not support splicing")),
 					"{:?}",
 					e
 				);
@@ -1524,8 +1533,14 @@ impl<'a> HarnessNode<'a> {
 				}
 			},
 			Err(e) => {
+				// Nodes following BLAKE2b do not signal splicing, so their peers refuse it. All
+				// nodes share the setting, so our own config stands for the peer's.
+				let follows_blake2b = self.node.get_current_config().follow_blake2b;
 				assert!(
-					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
+					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice"))
+						|| (follows_blake2b
+							&& matches!(e, APIError::ChannelUnavailable { ref err }
+								if err == "Peer does not support splicing")),
 					"{:?}",
 					e
 				);
@@ -1535,6 +1550,7 @@ impl<'a> HarnessNode<'a> {
 
 	fn reload<Out: Output + MaybeSend + MaybeSync>(
 		&mut self, use_old_mons: u8, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
+		follow_blake2b: bool,
 	) -> u64 {
 		let loaded_manager_generation = self.serialized_manager_generation;
 		let logger = Self::build_logger(self.node_id, out);
@@ -1585,8 +1601,9 @@ impl<'a> HarnessNode<'a> {
 			tx_broadcaster: Arc::clone(&self.broadcaster),
 			router,
 			message_router: router,
+			currency_conversion: Arc::new(NullCurrencyConversion),
 			logger: Arc::clone(&logger),
-			config: build_node_config(chan_type),
+			config: build_node_config(chan_type, follow_blake2b),
 			channel_monitors: monitor_refs,
 		};
 
@@ -2444,6 +2461,7 @@ impl PaymentTracker {
 struct Harness<'a, Out: Output + MaybeSend + MaybeSync> {
 	out: Out,
 	chan_type: ChanType,
+	follow_blake2b: bool,
 	chain_state: ChainState,
 	nodes: [HarnessNode<'a>; 3],
 	ab_link: PeerLink,
@@ -2453,8 +2471,9 @@ struct Harness<'a, Out: Output + MaybeSend + MaybeSync> {
 	close_tracker: ChannelCloseTracker,
 }
 
-fn build_node_config(chan_type: ChanType) -> UserConfig {
+fn build_node_config(chan_type: ChanType, follow_blake2b: bool) -> UserConfig {
 	let mut config = UserConfig::default();
+	config.follow_blake2b = follow_blake2b;
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
 	config.channel_handshake_config.announce_for_forwarding = true;
 	config.reject_inbound_splices = false;
@@ -2673,7 +2692,7 @@ fn lock_fundings(nodes: &[HarnessNode<'_>; 3]) {
 }
 
 impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
-	fn new(config_byte: u8, out: Out, router: &'a FuzzRouter) -> Self {
+	fn new(config_byte: u8, follow_blake2b: bool, out: Out, router: &'a FuzzRouter) -> Self {
 		let chan_type = match (config_byte >> 3) & 0b11 {
 			0 => ChanType::Legacy,
 			1 => ChanType::KeyedAnchors,
@@ -2745,6 +2764,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				&out,
 				router,
 				chan_type,
+				follow_blake2b,
 			),
 			HarnessNode::new(
 				1,
@@ -2756,6 +2776,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				&out,
 				router,
 				chan_type,
+				follow_blake2b,
 			),
 			HarnessNode::new(
 				2,
@@ -2767,6 +2788,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				&out,
 				router,
 				chan_type,
+				follow_blake2b,
 			),
 		];
 		// Connect peers first, then create channels.
@@ -2820,6 +2842,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		Self {
 			out,
 			chan_type,
+			follow_blake2b,
 			chain_state,
 			nodes,
 			ab_link: PeerLink::new(0, 1, chan_ab_ids),
@@ -3632,7 +3655,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			_ => panic!("invalid node index"),
 		}
 		let loaded_manager_generation =
-			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
+			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type, self.follow_blake2b);
 		// Startup sync is part of LDK's deserialization contract. Monitors and
 		// the manager can be loaded at different heights, so sync each monitor
 		// from its own best block rather than driving them all from the oldest
@@ -3914,9 +3937,11 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 	// bits 0-2: monitor styles (1 bit per node)
 	// bits 3-4: channel type (0=Legacy, 1=KeyedAnchors, 2=ZeroFeeCommitments)
 	// bits 5-7: deferred monitor write mode (1 bit per node)
+	// Byte 1, bit 0: nodes follow BLAKE2b (unified sigs, no splicing) when set.
 	let config_byte = if !data.is_empty() { data[0] } else { 0 };
-	let mut harness = Harness::new(config_byte, out, &router);
-	let mut read_pos = 1; // First byte was consumed for initial config.
+	let follow_blake2b = data.len() > 1 && data[1] & 1 != 0;
+	let mut harness = Harness::new(config_byte, follow_blake2b, out, &router);
+	let mut read_pos = 2; // The first two bytes were consumed for initial config.
 
 	'fuzz_loop: loop {
 		if data.len() < read_pos + 1 {

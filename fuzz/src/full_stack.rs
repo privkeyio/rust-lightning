@@ -51,6 +51,7 @@ use lightning::ln::peer_handler::{
 };
 use lightning::ln::script::ShutdownScript;
 use lightning::ln::types::ChannelId;
+use lightning::offers::currency::NullCurrencyConversion;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
 use lightning::onion_message::messenger::{Destination, MessageRouter, OnionMessagePath};
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
@@ -613,6 +614,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 		broadcast.clone(),
 		&router,
 		&router,
+		Arc::new(NullCurrencyConversion),
 		Arc::clone(&logger),
 		keys_manager.clone(),
 		keys_manager.clone(),

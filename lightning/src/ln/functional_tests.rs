@@ -6936,6 +6936,8 @@ pub fn test_override_channel_config() {
 	// Node0 initiates a channel to node1 using the override config.
 	let mut override_config = UserConfig::default();
 	override_config.channel_handshake_config.our_to_self_delay = 200;
+	// The test peers do not signal option_unified_sigs.
+	override_config.follow_blake2b = false;
 
 	nodes[0]
 		.node

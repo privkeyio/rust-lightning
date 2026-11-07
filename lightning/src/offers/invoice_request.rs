@@ -3631,11 +3631,14 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let payer_offer = OfferBuilder::new(payer_pubkey()).amount_msats(1).build().unwrap();
+		let payer_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion)
+			.amount_msats(1)
+			.build()
+			.unwrap();
 		assert!(payer_offer.as_ref().len() <= PAYER_OFFER_MAX_BYTES);
 		let contact_secrets = ContactSecrets::new(ContactSecret::new([3; 32]));
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3665,7 +3668,7 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 		let contact_secrets = ContactSecrets::new(ContactSecret::new([3; 32]));
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3686,9 +3689,12 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
-		let payer_offer = OfferBuilder::new(payer_pubkey()).amount_msats(1).build().unwrap();
+		let payer_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion)
+			.amount_msats(1)
+			.build()
+			.unwrap();
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3715,7 +3721,7 @@ mod tests {
 		let name = HumanReadableName::new("alice", "example.com").unwrap();
 		let offer_key = recipient_keys().secret_key();
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3737,15 +3743,17 @@ mod tests {
 		let parsed = InvoiceRequest::try_from(buffer).unwrap();
 		assert_eq!(parsed.payer_bip_353_name(), invoice_request.payer_bip_353_name());
 
-		let published_offer =
-			OfferBuilder::new(recipient_pubkey()).amount_msats(1).build().unwrap();
+		let published_offer = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
+			.amount_msats(1)
+			.build()
+			.unwrap();
 		assert!(parsed.payer_bip_353_name().unwrap().matches_offer(&published_offer).is_ok());
 
 		let payment_paths = payment_paths();
 		let payment_hash = payment_hash();
 		let now = now();
 		let invoice = invoice_request
-			.respond_with_no_std(payment_paths, payment_hash, now)
+			.respond_with_no_std(&NullCurrencyConversion, payment_paths, payment_hash, now)
 			.unwrap()
 			.build()
 			.unwrap()
@@ -3765,14 +3773,14 @@ mod tests {
 		let payment_id = PaymentId([1; 32]);
 		let contact_secrets = ContactSecrets::new(ContactSecret::new([3; 32]));
 		let name = HumanReadableName::new("alice", "example.com").unwrap();
-		let oversized_offer = OfferBuilder::new(payer_pubkey())
+		let oversized_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1)
 			.description("a".repeat(PAYER_OFFER_MAX_BYTES))
 			.build()
 			.unwrap();
 		assert!(oversized_offer.as_ref().len() > PAYER_OFFER_MAX_BYTES);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3795,14 +3803,14 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let oversized_offer = OfferBuilder::new(payer_pubkey())
+		let oversized_offer = OfferBuilder::new(payer_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1)
 			.description("a".repeat(PAYER_OFFER_MAX_BYTES))
 			.build()
 			.unwrap();
 		assert!(oversized_offer.as_ref().len() > PAYER_OFFER_MAX_BYTES);
 
-		match OfferBuilder::new(recipient_pubkey())
+		match OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()
@@ -3824,7 +3832,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey())
+		let invoice_request = OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
 			.amount_msats(1000)
 			.build()
 			.unwrap()

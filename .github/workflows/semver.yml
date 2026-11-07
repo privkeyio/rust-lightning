@@ -9,6 +9,8 @@ on:
 
 jobs:
   semver-checks:
+    # Compares against the crates.io releases, which lack the BLAKE2b API.
+    if: github.repository == 'lightningdevkit/rust-lightning'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
